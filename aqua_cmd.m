@@ -4,9 +4,9 @@ startup;  % initialize
 load('random_Seed');
 rng(s);
 
-preset = 1;
-p0 = 'D:\';  % folder name
-f0 = 'Test.tif';  % file name
+preset = 3;
+p0 = 'F:\';  % folder name
+f0 = '2-20X-loc1_ch1.tif';  % file name
 
 %% save path
 [folder, name, ext] = fileparts(strcat(p0,'\',f0));
