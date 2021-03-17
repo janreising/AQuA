@@ -4,13 +4,15 @@ startup;  % initialize
 load('random_Seed');
 rng(s);
 
-preset = 3;
-p0 = 'F:\';  % folder name
-f0 = '2-20X-loc1_ch1.tif';  % file name
+%preset = 3;
+%file = "...";
 
 %% save path
-[folder, name, ext] = fileparts(strcat(p0,'\',f0));
+[folder, name, ext] = fileparts(file);
+p0 = strcat(folder,filesep);
+f0 = strcat(name,ext);
 path0 = [p0,name,'\'];
+
 if ~exist(path0,'dir') && ~isempty(path0)
     mkdir(path0);    
 end
