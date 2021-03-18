@@ -20,6 +20,19 @@ path0 = [p0,name,filesep];
 feature_path = [p0,name,'_FeatureTable.xlsx'];
 mat_path = [p0,name,'_AQuA.mat'];
 
+%% determine preset
+
+if contains(name, "10X") & contains(name, "ch2")
+    preset = 1;
+elseif contains(name, "20X") & contains(name, "ch1")
+    preset = 2;
+elseif contains(name, "20X") & contains(name, "ch2")
+    preset = 3;
+else
+    fprintf("Cannot choose preset automatically. Stopping the run!");
+    return 
+end
+
 %% options
 opts = util.parseParam(preset,1);
 
@@ -101,6 +114,7 @@ if 0
 end
 
 save(mat_path, 'res');
+fprintf("Saved .mat file");
 
 %% export table
 fts = ftsLstE;
@@ -162,3 +176,5 @@ end
 featureTable = table(ftsTb,'RowNames',ftsName);
 writetable(featureTable,feature_path,'WriteVariableNames',0,'WriteRowNames',1);
 
+fprintf("Exported Feature table");
+fprintf("\nProcessing finished.");
