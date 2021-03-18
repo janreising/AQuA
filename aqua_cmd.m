@@ -146,47 +146,47 @@ featureTable = table(ftsTb,'RowNames',ftsName);
 writetable(featureTable,ftb,'WriteVariableNames',0,'WriteRowNames',1);
 
 %% export movie
-datL = zeros(opts.sz);
-for i = 1:numel(evtLstE)
-   datL(evtLstE{i}) = i; 
-end
-ov1 = zeros(opts.sz(1),opts.sz(2),3,opts.sz(3));
+%datL = zeros(opts.sz);
+%for i = 1:numel(evtLstE)
+%   datL(evtLstE{i}) = i; 
+%end
+%ov1 = zeros(opts.sz(1),opts.sz(2),3,opts.sz(3));
 % re-scale movie
-c0 = zeros(nEvt,3);
-for nn=1:nEvt
-    x = rand(1,3);
-    while (x(1)>0.8 && x(2)>0.8 && x(3)>0.8) || sum(x)<1
-        x = rand(1,3);
-    end
-    x = x/max(x);
-    c0(nn,:) = x;
-end
+%c0 = zeros(nEvt,3);
+%for nn=1:nEvt
+%    x = rand(1,3);
+%    while (x(1)>0.8 && x(2)>0.8 && x(3)>0.8) || sum(x)<1
+%        x = rand(1,3);
+%    end
+%    x = x/max(x);
+%    c0(nn,:) = x;
+%end
 
-for tt=1:opts.sz(3)
-    if mod(tt,100)==0
-        fprintf('Frame %d\n',tt); 
-    end
-    dat0 = datOrg(:,:,tt);
-    if opts.usePG==1
-        dat0 = dat0.^2;
-    end
-    datx = cat(3,dat0,dat0,dat0);
-    datxCol = datx;
-    [H,W,~] = size(datx);
-    reCon = double(datRE(:,:,tt))/255;
-    rPlane = zeros(H,W);
-    gPlane = rPlane;
-    bPlane = rPlane;
-    map = datL(:,:,tt);
-    rPlane(map>0) = c0(map(map>0),1);
-    gPlane(map>0) = c0(map(map>0),2);
-    bPlane(map>0) = c0(map(map>0),3);
-    datxCol(:,:,1) = rPlane.*reCon + datxCol(:,:,1);
-    datxCol(:,:,2) = gPlane.*reCon + datxCol(:,:,2);
-    datxCol(:,:,3) = bPlane.*reCon + datxCol(:,:,3);
-    ov1(:,:,:,tt) = datxCol;
-end
-io.writeTiffSeq(fmov,ov1,8);
+%for tt=1:opts.sz(3)
+%    if mod(tt,100)==0
+%        fprintf('Frame %d\n',tt); 
+%    end
+%    dat0 = datOrg(:,:,tt);
+%    if opts.usePG==1
+%        dat0 = dat0.^2;
+%    end
+%    datx = cat(3,dat0,dat0,dat0);
+%    datxCol = datx;
+%    [H,W,~] = size(datx);
+%    reCon = double(datRE(:,:,tt))/255;
+%    rPlane = zeros(H,W);
+%    gPlane = rPlane;
+%    bPlane = rPlane;
+%    map = datL(:,:,tt);
+%    rPlane(map>0) = c0(map(map>0),1);
+%    gPlane(map>0) = c0(map(map>0),2);
+%    bPlane(map>0) = c0(map(map>0),3);
+%    datxCol(:,:,1) = rPlane.*reCon + datxCol(:,:,1);
+%    datxCol(:,:,2) = gPlane.*reCon + datxCol(:,:,2);
+%    datxCol(:,:,3) = bPlane.*reCon + datxCol(:,:,3);
+%    ov1(:,:,:,tt) = datxCol;
+%end
+%io.writeTiffSeq(fmov,ov1,8);
 
 
 %% export to GUI
