@@ -11,16 +11,16 @@ rng(s);
 [folder, name, ext] = fileparts(file);
 p0 = strcat(folder,filesep);
 f0 = strcat(name,ext);
-path0 = [p0,name,'\'];
+path0 = [p0,name,filesep];
 
-if ~exist(path0,'dir') && ~isempty(path0)
-    mkdir(path0);    
-end
+% if ~exist(path0,'dir') && ~isempty(path0)
+%     mkdir(path0);    
+% end
 
-ftb = [path0,name,'_FeatureTable.xlsx'];       % Movie Path
-fmov = [path0,name,'_Movie.tif'];
+feature_path = [p0,name,'_FeatureTable.xlsx'];
+mat_path = [p0,name,'_AQuA.mat'];
 
-
+%% options
 opts = util.parseParam(preset,1);
 
 % opts.smoXY = 1;
@@ -85,6 +85,23 @@ try
 catch
 end
 
+%% export to GUI
+res = fea.gatherRes(datOrg,opts,evtLstE,ftsLstE,dffMatE,dMatE,riseLstE,datRE);
+% aqua_gui(res);
+
+% visualize the results in each step
+if 0
+    ov1 = plt.regionMapWithData(arLst,datOrg,0.5); zzshow(ov1);
+    ov1 = plt.regionMapWithData(svLst,datOrg,0.5); zzshow(ov1);
+    ov1 = plt.regionMapWithData(seLst,datOrg,0.5,datR); zzshow(ov1);
+    ov1 = plt.regionMapWithData(evtLst,datOrg,0.5,datR); zzshow(ov1);
+    ov1 = plt.regionMapWithData(evtLstFilterZ,datOrg,0.5,datR); zzshow(ov1);
+    ov1 = plt.regionMapWithData(evtLstMerge,datOrg,0.5,datR); zzshow(ov1);
+    [ov1,lblMapS] = plt.regionMapWithData(evtLstE,datOrg,0.5,datRE); zzshow(ov1);
+end
+
+save(mat_path, 'res');
+
 %% export table
 fts = ftsLstE;
 tb = readtable('userFeatures.csv','Delimiter',',');
@@ -143,66 +160,5 @@ for ii=1:nFt
     end
 end
 featureTable = table(ftsTb,'RowNames',ftsName);
-writetable(featureTable,ftb,'WriteVariableNames',0,'WriteRowNames',1);
-
-%% export movie
-%datL = zeros(opts.sz);
-%for i = 1:numel(evtLstE)
-%   datL(evtLstE{i}) = i; 
-%end
-%ov1 = zeros(opts.sz(1),opts.sz(2),3,opts.sz(3));
-% re-scale movie
-%c0 = zeros(nEvt,3);
-%for nn=1:nEvt
-%    x = rand(1,3);
-%    while (x(1)>0.8 && x(2)>0.8 && x(3)>0.8) || sum(x)<1
-%        x = rand(1,3);
-%    end
-%    x = x/max(x);
-%    c0(nn,:) = x;
-%end
-
-%for tt=1:opts.sz(3)
-%    if mod(tt,100)==0
-%        fprintf('Frame %d\n',tt); 
-%    end
-%    dat0 = datOrg(:,:,tt);
-%    if opts.usePG==1
-%        dat0 = dat0.^2;
-%    end
-%    datx = cat(3,dat0,dat0,dat0);
-%    datxCol = datx;
-%    [H,W,~] = size(datx);
-%    reCon = double(datRE(:,:,tt))/255;
-%    rPlane = zeros(H,W);
-%    gPlane = rPlane;
-%    bPlane = rPlane;
-%    map = datL(:,:,tt);
-%    rPlane(map>0) = c0(map(map>0),1);
-%    gPlane(map>0) = c0(map(map>0),2);
-%    bPlane(map>0) = c0(map(map>0),3);
-%    datxCol(:,:,1) = rPlane.*reCon + datxCol(:,:,1);
-%    datxCol(:,:,2) = gPlane.*reCon + datxCol(:,:,2);
-%    datxCol(:,:,3) = bPlane.*reCon + datxCol(:,:,3);
-%    ov1(:,:,:,tt) = datxCol;
-%end
-%io.writeTiffSeq(fmov,ov1,8);
-
-
-%% export to GUI
-res = fea.gatherRes(datOrg,opts,evtLstE,ftsLstE,dffMatE,dMatE,riseLstE,datRE);
-% aqua_gui(res);
-
-% visualize the results in each step
-if 0
-    ov1 = plt.regionMapWithData(arLst,datOrg,0.5); zzshow(ov1);
-    ov1 = plt.regionMapWithData(svLst,datOrg,0.5); zzshow(ov1);
-    ov1 = plt.regionMapWithData(seLst,datOrg,0.5,datR); zzshow(ov1);
-    ov1 = plt.regionMapWithData(evtLst,datOrg,0.5,datR); zzshow(ov1);
-    ov1 = plt.regionMapWithData(evtLstFilterZ,datOrg,0.5,datR); zzshow(ov1);
-    ov1 = plt.regionMapWithData(evtLstMerge,datOrg,0.5,datR); zzshow(ov1);
-    [ov1,lblMapS] = plt.regionMapWithData(evtLstE,datOrg,0.5,datRE); zzshow(ov1);
-end
-
-save([path0,name,'_AQuA.mat'], 'res');
+writetable(featureTable,feature_path,'WriteVariableNames',0,'WriteRowNames',1);
 
