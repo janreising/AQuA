@@ -178,4 +178,4 @@ featureTable = table(ftsTb,'RowNames',ftsName);
 writetable(featureTable,feature_path,'WriteVariableNames',0,'WriteRowNames',1);
 
 fprintf("Exported Feature table");
-fprintf("\nProcessing finished.");
+fprintf("\nProcessing finished.\n");
