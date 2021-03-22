@@ -5,57 +5,52 @@ load('random_Seed');
 rng(s);
 
 preset = 2;
-file = 'C:\Users\janrei\Desktop\delete\test.tiff';
+input = 'C:\Users\janrei\Desktop\delete\test\';
+channel=1;
+total_channels=1;
 
-%% save path
-[folder, name, ext] = fileparts(file);
-p0 = strcat(folder,filesep);
-f0 = strcat(name,ext);
-path0 = [p0,name,filesep];
-
-% if ~exist(path0,'dir') && ~isempty(path0)
-%     mkdir(path0);    
-% end
-
-feature_path = [p0,name,'_FeatureTable.xlsx'];
-mat_path = [p0,name,'_AQuA.mat'];
-h5_path = [p0,name,'.h5'];
+[folder, name, ext] = fileparts(input);
 
 %% determine preset
-%{
-if contains(name, "10X") & contains(name, "ch2")
-    preset = 1;
-elseif contains(name, "20X") & contains(name, "ch1")
-    preset = 2;
-elseif contains(name, "20X") & contains(name, "ch2")
-    preset = 3;
-else
-    fprintf("Cannot choose preset automatically. Stopping the run!");
-    return 
+if exist('preset', 'var') == 0
+
+    if contains(name, "10X") & contains(name, "ch2")
+        preset = 1;
+    elseif contains(name, "20X") & contains(name, "ch1")
+        preset = 2;
+    elseif contains(name, "20X") & contains(name, "ch2")
+        preset = 3;
+    else
+        fprintf("Cannot choose preset automatically. Stopping the run!");
+        return 
+    end
 end
-%}
 
 %% options
 opts = util.parseParam(preset,1);
 
-% opts.smoXY = 1;
-% opts.thrARScl = 2;
-% opts.movAvgWin = 15;
-% opts.minSize = 8;
-% opts.regMaskGap = 0;
-% opts.thrTWScl = 5;
-% opts.thrExtZ = 0.5;
-% opts.extendSV = 1;
-% opts.cRise = 1;
-% opts.cDelay = 2;
-% opts.zThr = 3;
-% opts.getTimeWindowExt = 10000;
-% opts.seedNeib = 5;
-% opts.seedRemoveNeib = 5;
-% opts.thrSvSig = 1;
-% opts.extendEvtRe = 0;
+%% read data
+fprintf("\nLoading data ...\n");
+tic;
+if isfolder(input)
+    [datOrg, opts] = tiff.load_from_folder(input, channel, total_channels, opts);
+    
+elseif strcmp(ext, '.tif') || strcmp(ext, '.tiff')
+    [datOrg, opts] = tiff.load_from_tiff(input, opts);
 
-[datOrg,opts] = burst.prep1(p0,f0,[],opts);  % read data
+else
+    [datOrg,opts] = burst.prep1(p0,f0,[],opts);
+
+end
+toc; 
+
+%% set file names
+feature_path = strcat(opts.filePath,opts.fileName,'_FeatureTable.xlsx');
+feature_path = feature_path{1}; % TODO why do I have to do this?
+mat_path = strcat(opts.filePath,opts.fileName,'_AQuA.mat');
+mat_path = mat_path{1};
+h5_path = strcat(opts.filePath,opts.fileName,'.h5');
+h5_path = h5_path{1};
 
 %% detection
 [dat,dF,arLst,lmLoc,opts,dL] = burst.actTop(datOrg,opts);  % foreground and seed detection
@@ -121,24 +116,6 @@ save_to_h5(h5_path, dMatE, '/dMatE');
 save_to_h5(h5_path, riseLstE, '/riseLstE');
 save_to_h5(h5_path, datRE, '/datRE');
 toc;
-
-%% export to GUI
-% res = fea.gatherRes(datOrg,opts,evtLstE,ftsLstE,dffMatE,dMatE,riseLstE,datRE);
-% % aqua_gui(res);
-% 
-% % visualize the results in each step
-% if 0
-%     ov1 = plt.regionMapWithData(arLst,datOrg,0.5); zzshow(ov1);
-%     ov1 = plt.regionMapWithData(svLst,datOrg,0.5); zzshow(ov1);
-%     ov1 = plt.regionMapWithData(seLst,datOrg,0.5,datR); zzshow(ov1);
-%     ov1 = plt.regionMapWithData(evtLst,datOrg,0.5,datR); zzshow(ov1);
-%     ov1 = plt.regionMapWithData(evtLstFilterZ,datOrg,0.5,datR); zzshow(ov1);
-%     ov1 = plt.regionMapWithData(evtLstMerge,datOrg,0.5,datR); zzshow(ov1);
-%     [ov1,lblMapS] = plt.regionMapWithData(evtLstE,datOrg,0.5,datRE); zzshow(ov1);
-% end
-% 
-% save(mat_path, 'res');
-% fprintf("Saved .mat file");
 
 %% export table
 fts = ftsLstE;
