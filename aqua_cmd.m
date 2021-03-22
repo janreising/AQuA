@@ -4,8 +4,8 @@ startup;  % initialize
 load('random_Seed');
 rng(s);
 
-%preset = 3;
-%file = "...";
+preset = 2;
+file = 'C:\Users\janrei\Desktop\delete\test.tiff';
 
 %% save path
 [folder, name, ext] = fileparts(file);
@@ -19,9 +19,10 @@ path0 = [p0,name,filesep];
 
 feature_path = [p0,name,'_FeatureTable.xlsx'];
 mat_path = [p0,name,'_AQuA.mat'];
+h5_path = [p0,name,'.h5'];
 
 %% determine preset
-
+%{
 if contains(name, "10X") & contains(name, "ch2")
     preset = 1;
 elseif contains(name, "20X") & contains(name, "ch1")
@@ -32,6 +33,7 @@ else
     fprintf("Cannot choose preset automatically. Stopping the run!");
     return 
 end
+%}
 
 %% options
 opts = util.parseParam(preset,1);
@@ -98,23 +100,45 @@ try
 catch
 end
 
-%% export to GUI
-res = fea.gatherRes(datOrg,opts,evtLstE,ftsLstE,dffMatE,dMatE,riseLstE,datRE);
-% aqua_gui(res);
+%% export to h5
+if exist(h5_path, 'file') == 2
+    fprintf("\nFile already exists. Choosing new name:\n");
 
-% visualize the results in each step
-if 0
-    ov1 = plt.regionMapWithData(arLst,datOrg,0.5); zzshow(ov1);
-    ov1 = plt.regionMapWithData(svLst,datOrg,0.5); zzshow(ov1);
-    ov1 = plt.regionMapWithData(seLst,datOrg,0.5,datR); zzshow(ov1);
-    ov1 = plt.regionMapWithData(evtLst,datOrg,0.5,datR); zzshow(ov1);
-    ov1 = plt.regionMapWithData(evtLstFilterZ,datOrg,0.5,datR); zzshow(ov1);
-    ov1 = plt.regionMapWithData(evtLstMerge,datOrg,0.5,datR); zzshow(ov1);
-    [ov1,lblMapS] = plt.regionMapWithData(evtLstE,datOrg,0.5,datRE); zzshow(ov1);
+    [folder, name, ext] = fileparts(h5_path);
+    h5_path = [tempname(folder),'_',name,ext];
+
+    disp(h5_path);
 end
 
-save(mat_path, 'res');
-fprintf("Saved .mat file");
+fprintf("\nStarting to save ... \n");
+tic;
+save_to_h5(h5_path, datOrg, '/datOrg');
+save_to_h5(h5_path, opts, '/opts');
+save_to_h5(h5_path, evtLstE, '/evtLstE');
+save_to_h5(h5_path, ftsLstE, '/ftsLstE');
+save_to_h5(h5_path, dffMatE, '/dffMatE');
+save_to_h5(h5_path, dMatE, '/dMatE');
+save_to_h5(h5_path, riseLstE, '/riseLstE');
+save_to_h5(h5_path, datRE, '/datRE');
+toc;
+
+%% export to GUI
+% res = fea.gatherRes(datOrg,opts,evtLstE,ftsLstE,dffMatE,dMatE,riseLstE,datRE);
+% % aqua_gui(res);
+% 
+% % visualize the results in each step
+% if 0
+%     ov1 = plt.regionMapWithData(arLst,datOrg,0.5); zzshow(ov1);
+%     ov1 = plt.regionMapWithData(svLst,datOrg,0.5); zzshow(ov1);
+%     ov1 = plt.regionMapWithData(seLst,datOrg,0.5,datR); zzshow(ov1);
+%     ov1 = plt.regionMapWithData(evtLst,datOrg,0.5,datR); zzshow(ov1);
+%     ov1 = plt.regionMapWithData(evtLstFilterZ,datOrg,0.5,datR); zzshow(ov1);
+%     ov1 = plt.regionMapWithData(evtLstMerge,datOrg,0.5,datR); zzshow(ov1);
+%     [ov1,lblMapS] = plt.regionMapWithData(evtLstE,datOrg,0.5,datRE); zzshow(ov1);
+% end
+% 
+% save(mat_path, 'res');
+% fprintf("Saved .mat file");
 
 %% export table
 fts = ftsLstE;
