@@ -4,8 +4,8 @@ startup;  % initialize
 load('random_Seed');
 rng(s);
 
-preset = 2;
-input = 'C:\Users\janrei\Desktop\delete\test\';
+% preset = 2;
+% input = 'C:\Users\janrei\Desktop\delete\test\';
 channel=1;
 total_channels=1;
 
