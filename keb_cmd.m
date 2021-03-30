@@ -14,7 +14,7 @@ f0 = strcat(name,ext);
 path0 = [p0,name,filesep];
 
 feature_path = [p0,name,'_FeatureTable.xlsx'];
-h5_path = [p0,name,'_AQuA.h5'];
+h5path = [p0,name,'_AQuA.h5'];
 
 %% determine preset
 
@@ -25,8 +25,10 @@ elseif contains(name, "20X") & contains(name, "ch1")
 elseif contains(name, "20X") & contains(name, "ch2")
     preset = 3;
 else
-    fprintf("Cannot choose preset automatically. Stopping the run!");
-    return 
+    %fprintf("Cannot choose preset automatically. Stopping the run!");
+    %return
+    preset = 2;
+    fprintf("Cannot choose automatically. Choosing 2");
 end
 
 %% options
@@ -97,8 +99,8 @@ end
 %% export to GUI
 res = fea.gatherRes(datOrg,opts,evtLstE,ftsLstE,dffMatE,dMatE,riseLstE,datRE);
 
-h5create(h5path,'/data', "data");
-h5write(h5path, '/dataOrg', dataOrg);
+h5create(h5path,'/data', [10, 20]);
+% h5write(h5path, '/dataOrg', dataOrg);
 h5write(h5path, '/opts', opts);
 h5write(h5path, '/evtLstE', evtLstE);
 h5write(h5path, '/ftsLstE', ftsLstE);
