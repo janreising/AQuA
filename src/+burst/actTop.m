@@ -20,16 +20,24 @@ function [dat,dF,arLst,lmLoc,opts,dActVox] = actTop(dat,opts,evtSpatialMask,ff)
     end
     
     % noise for raw data
-    for x = 1:H
+    stdMap = zeros(H, W);
+    s1 = dat(:,:, 2:end);
+    s2 = dat(:,:, end-1);
+    
+    parfor x = 1:H
+        
+        std_slic = stdMap(x,:);        
         for y = 1:W
-            xx = (dat(x,y,2:end)-dat(x,y,1:end-1)).^2;
-            stdMap(x,y) = sqrt(median(xx,3)/0.9133);
+            xx = (s1(x,y) - s2(x, y)).^2;
+            std_slic(y) = sqrt(median(xx,3)/0.9133);
         end
+        
+        stdMap(x,:) = std_slic;
     end
 %     stdMap = sqrt(median(xx,3)/0.9133);
     stdMapGauBef = double(imgaussfilt(stdMap));
     stdMapGauBef(noiseEstMask==0) = nan;
-    stdEstBef = double(nanmedian(stdMapGauBef(:))) + 1e-6;
+%     stdEstBef = double(nanmedian(stdMapGauBef(:))) + 1e-6;
     
     % smooth the data
     dat = dat;
@@ -40,12 +48,21 @@ function [dat,dF,arLst,lmLoc,opts,dActVox] = actTop(dat,opts,evtSpatialMask,ff)
     end
     
     % noise for smoothed data
-    for x = 1:H
+    stdMap = zeros(H, W);
+    s1 = dat(:,:, 2:end);
+    s2 = dat(:,:, end-1);
+    
+    parfor x = 1:H
+        
+        std_slic = stdMap(x,:);
         for y = 1:W
-            xx = (dat(x,y,2:end)-dat(x,y,1:end-1)).^2;
-            stdMap(x,y) = sqrt(median(xx,3)/0.9133);
+            xx = (s1(x,y) - s2(x, y)).^2;
+            std_slic(y) = sqrt(median(xx,3)/0.9133);
         end
+        
+        stdMap(x,:) = std_slic;
     end
+    
     stdMapGau = double(imgaussfilt(stdMap));
     stdMapGau(noiseEstMask==0) = nan;
     stdEst = double(nanmedian(stdMapGau(:))) + 1e-6;

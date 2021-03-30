@@ -34,7 +34,7 @@ end
 % fill holes
 dh = [-1 1 0 0];
 dw = [0 0 -1 1];
-for tt=1:T
+parfor tt=1:T
     L = lblMap2F(:,:,tt);
     Lb = L>0;
     Lf = imfill(Lb>0,'holes');
