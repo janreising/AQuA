@@ -11,13 +11,13 @@ echo "Preset: $2"
 echo "First frame: $3"
 
 # load libraries
-ml MATLAB/2019b.Update2
+#ml MATLAB/2019b.Update2
 
 # go to folder
-cd ~/Private/aqua_janrei/
+#cd ~/Private/aqua_janrei/
 
 # run script
 #srun matlab -r "preset=$preset;file='$file';try, run('aqua_cmd_dynamic.m'); end; quit"
 #srun matlab -r "try, run('aqua_cmd.m'); end; quit"
-srun matlab -r "preset='$2';input='$1';channel='$3';run('aqua_cmd.m');"
+matlab -r "preset=$2;input='$1';channel=$3;run('aqua_cmd.m');exit;" -nodesktop
 

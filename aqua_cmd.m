@@ -51,7 +51,7 @@ feature_path = strcat(opts.filePath,opts.fileName,'_FeatureTable.xlsx');
 feature_path = feature_path{1}; % TODO why do I have to do this?
 mat_path = strcat(opts.filePath,opts.fileName,'_AQuA.mat');
 mat_path = mat_path{1};
-h5_path = strcat(opts.filePath,opts.fileName,'.h5');
+h5_path = strcat(opts.filePath,opts.fileName,'_ch',num2str(channel),'.h5');
 h5_path = h5_path{1};
 
 %% detection
@@ -109,16 +109,17 @@ end
 
 fprintf("\nStarting to save ... \n");
 tic;
-save_to_h5(h5_path, datOrg, '/datOrg');
-save_to_h5(h5_path, opts, '/opts');
-save_to_h5(h5_path, evtLstE, '/evtLstE');
-save_to_h5(h5_path, ftsLstE, '/ftsLstE');
-save_to_h5(h5_path, dffMatE, '/dffMatE');
-save_to_h5(h5_path, dMatE, '/dMatE');
-save_to_h5(h5_path, riseLstE, '/riseLstE');
-save_to_h5(h5_path, datRE, '/datRE');
+save_to_h5(h5_path, datOrg, '/res/datOrg');
+save_to_h5(h5_path, opts, '/res/opts');
+save_to_h5(h5_path, evtLstE, '/res/evt');
+save_to_h5(h5_path, ftsLstE, '/res/fts');
+save_to_h5(h5_path, dffMatE, '/res/dffMat');
+save_to_h5(h5_path, dMatE, '/res/dMat');
+save_to_h5(h5_path, riseLstE, '/res/rise');
+save_to_h5(h5_path, datRE, '/res/datR');
 toc;
 
+%{
 %% export table
 fts = ftsLstE;
 tb = readtable('userFeatures.csv','Delimiter',',');
@@ -180,4 +181,6 @@ featureTable = table(ftsTb,'RowNames',ftsName);
 writetable(featureTable,feature_path,'WriteVariableNames',0,'WriteRowNames',1);
 
 fprintf("Exported Feature table");
+%}
+
 fprintf("\nProcessing finished.\n");
