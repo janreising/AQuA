@@ -12,6 +12,7 @@ rng(s);
 [folder, name, ext] = fileparts(input);
 
 %% determine preset
+%{
 if exist('preset', 'var') == 0
 
     if contains(name, "10X") & contains(name, "ch2")
@@ -25,6 +26,7 @@ if exist('preset', 'var') == 0
         return 
     end
 end
+%}
 
 %% options
 opts = util.parseParam(preset,1);
