@@ -6,8 +6,7 @@
 ##SBATCH --mem 768G
 #SBATCH -J janrei_aqua
 
-echo "Which folder/file would you like to analyze?"
-read -p "Input: " input
+input = $1
 echo "Analyzing: $input"
 
 read -p "Preset: " preset
