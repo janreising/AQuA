@@ -4,10 +4,10 @@ startup;  % initialize
 load('random_Seed');
 rng(s);
 
-% preset = 2;
+%preset = 2;
 % input = 'C:\Users\janrei\Desktop\delete\test\';
-channel=1;
-total_channels=1;
+%channel=1;
+%total_channels=2;
 
 [folder, name, ext] = fileparts(input);
 
