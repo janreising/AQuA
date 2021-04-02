@@ -33,9 +33,15 @@ function r = save_to_h5(out_path, obj, loc)
         
         % convert to string since char is not supported
         obj = convertCharsToStrings(obj);
-        
-        h5create(out_path, loc, size(obj), 'Datatype', 'string');
-        h5write(out_path, loc, obj);
+	try
+        	h5create(out_path, loc, size(obj), 'Datatype', 'string');
+        	h5write(out_path, loc, obj);
+	catch
+		warning("There was a problem writing a string");
+		disp(loc);
+		disp(obj);
+		disp(class(obj));
+	end
         
     elseif isinteger(obj)
         
