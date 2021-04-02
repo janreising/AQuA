@@ -28,6 +28,11 @@ if exist('preset', 'var') == 0
 end
 %}
 
+% scale if necessary
+if exist('scale', 'var') == 0
+	scale = 1;
+end
+
 %% options
 opts = util.parseParam(preset,1);
 
@@ -35,7 +40,7 @@ opts = util.parseParam(preset,1);
 fprintf("\nLoading data ...\n");
 tic;
 if isfolder(input)
-    [datOrg, opts] = tiff.load_from_folder(input, channel, total_channels, opts);
+    [datOrg, opts] = tiff.load_from_folder(input, channel, total_channels, opts, scale);
     
 elseif strcmp(ext, '.tif') || strcmp(ext, '.tiff')
     [datOrg, opts] = tiff.load_from_tiff(input, opts);
@@ -51,7 +56,7 @@ feature_path = strcat(opts.filePath,opts.fileName,'_FeatureTable.xlsx');
 feature_path = feature_path{1}; % TODO why do I have to do this?
 mat_path = strcat(opts.filePath,opts.fileName,'_AQuA.mat');
 mat_path = mat_path{1};
-h5_path = strcat(opts.filePath,opts.fileName,'_ch',num2str(channel),'.h5');
+h5_path = strcat(opts.filePath,opts.fileName,'_ch',num2str(channel),'_dw',num2str(scale),'.h5');
 h5_path = h5_path{1};
 
 %% detection

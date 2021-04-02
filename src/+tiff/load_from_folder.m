@@ -1,4 +1,4 @@
-function [img, opts] = load_from_folder(path, channel, total_channels, opts)
+function [img, opts] = load_from_folder(path, channel, total_channels, opts, scale)
 
     clear options;
     
@@ -36,7 +36,7 @@ function [img, opts] = load_from_folder(path, channel, total_channels, opts)
 
     filetype = strcat('uint',int2str(info.BitDepth));
     MaxSampleValue = info.MaxSampleValue;
-    img = zeros(info.Width, info.Height, uint8(numel(files)/total_channels), filetype);
+    img = zeros(info.Width*scale, info.Height*scale, uint8(numel(files)/total_channels), filetype);
 
     % save image info
     opts.sz = [info.Width, info.Height, uint8(numel(files)/total_channels)];
@@ -45,9 +45,13 @@ function [img, opts] = load_from_folder(path, channel, total_channels, opts)
     
     % load frames and fill array
     i=1;
+    frame = zeros(info.Width*scale, info.Height*scale, filetype);
     for k=channel:total_channels:numel(files)
 
         frame = imread(strcat(path,files(k).name));
+	if not(scale== 1)
+		frame = imresize(frame, [info.Width*scale, info.Height*scale]);
+	end
         img(:,:, i) = frame;
 
         i = i+1;
