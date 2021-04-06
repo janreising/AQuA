@@ -18,10 +18,16 @@ function r = save_to_h5(out_path, obj, loc)
         end
         
     elseif isa(obj, 'double')
-
-        h5create(out_path, loc, size(obj), 'Datatype', 'double');
-        h5write(out_path, loc, obj);
-
+        try
+            h5create(out_path, loc, size(obj), 'Datatype', 'double');
+            h5write(out_path, loc, obj);
+        catch
+            warning("There was a problem writing a double");
+            disp(loc);
+            disp(size(obj));
+            disp(class(obj));
+        end
+        
         return
         
     elseif isa(obj, 'single')
@@ -41,6 +47,10 @@ function r = save_to_h5(out_path, obj, loc)
 		disp(loc);
 		disp(obj);
 		disp(class(obj));
+        
+        temp_name = [out_path,loc,'.m']
+        save temp_name obj
+        
 	end
         
     elseif isinteger(obj)
