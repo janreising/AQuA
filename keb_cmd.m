@@ -4,8 +4,8 @@ startup;  % initialize
 load('random_Seed');
 rng(s);
 
-preset = 2;
-file = "/home/carmichael/Downloads/2-40X-loc1.cnmfe.h5";
+%preset = 2;
+%file = "/home/carmichael/Downloads/2-40X-loc1.cnmfe.h5";
 
 %% save path
 [folder, name, ext] = fileparts(file);
