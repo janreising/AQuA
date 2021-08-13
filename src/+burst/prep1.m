@@ -16,6 +16,11 @@ function [dat,opts] = prep1(p0,f0,rgT,opts,ff)
         headers = fieldnames(file);
         dat = file.(headers{1});
         maxImg = -1;
+    elseif endsWith(f0, '.h5')
+        fprintf('Loading h5 file\n');
+        dat = h5read(strcat(p0,f0),'/cnmfe/ast');
+        maxImg = -1;
+        fprintf('Loading finished.\n');
     else
         [dat,maxImg] = io.readTiffSeq([p0,filesep,f0]);
     end

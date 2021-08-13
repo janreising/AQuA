@@ -4,8 +4,8 @@ startup;  % initialize
 load('random_Seed');
 rng(s);
 
-%preset = 3;
-%file = "...";
+preset = 2;
+file = "/home/carmichael/Downloads/2-40X-loc1.cnmfe.h5";
 
 %% save path
 [folder, name, ext] = fileparts(file);
@@ -13,11 +13,12 @@ p0 = strcat(folder,filesep);
 f0 = strcat(name,ext);
 path0 = [p0,name,filesep];
 
-feature_path = [p0,name,'_FeatureTable.xlsx'];
-h5path = [p0,name,'_AQuA.h5'];
+feature_path = strcat(p0,name,'_FeatureTable.xlsx');
+h5path = strcat(p0,name,'_AQuA.h5');
 
 %% determine preset
 
+%{
 if contains(name, "10X") & contains(name, "ch2")
     preset = 1;
 elseif contains(name, "20X") & contains(name, "ch1")
@@ -30,6 +31,7 @@ else
     preset = 2;
     fprintf("Cannot choose automatically. Choosing 2");
 end
+%}
 
 %% options
 opts = util.parseParam(preset,1);
