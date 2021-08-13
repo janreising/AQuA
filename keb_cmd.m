@@ -98,81 +98,27 @@ try
 catch
 end
 
-%% export to GUI
-res = fea.gatherRes(datOrg,opts,evtLstE,ftsLstE,dffMatE,dMatE,riseLstE,datRE);
+%% export to h5
+if exist(h5_path, 'file') == 2
+    fprintf("\nFile already exists. Choosing new name:\n");
 
-h5create(h5path,'/data', [10, 20]);
-% h5write(h5path, '/dataOrg', dataOrg);
-h5write(h5path, '/opts', opts);
-h5write(h5path, '/evtLstE', evtLstE);
-h5write(h5path, '/ftsLstE', ftsLstE);
-h5write(h5path, '/dffMatE', dffMatE);
-h5write(h5path, '/dMatE', dMatE);
-h5write(h5path, '/riseLstE', riseLstE);
-h5write(h5path, '/datRE', datRE);
+    [folder, name, ext] = fileparts(h5_path);
+    h5_path = [tempname(folder),'_',name,ext];
 
-save(mat_path, 'res');
-fprintf("Saved .h5 file");
-
-%% export table
-fts = ftsLstE;
-tb = readtable('userFeatures.csv','Delimiter',',');
-if(isempty(ftsLstE.basic))
-    nEvt = 0;
-else
-    nEvt = numel(ftsLstE.basic.area);
+    disp(h5_path);
 end
-nFt = numel(tb.Name);
-ftsTb = nan(nFt,nEvt);
-ftsName = cell(nFt,1);
-ftsCnt = 1;
-dixx = ftsLstE.notes.propDirectionOrder;
-lmkLst = [];
 
-for ii=1:nFt
-    cmdSel0 = tb.Script{ii};
-    ftsName0 = tb.Name{ii};
-    % if find landmark or direction
-    if ~isempty(strfind(cmdSel0,'xxLmk')) %#ok<STREMP>
-        for xxLmk=1:numel(lmkLst)
-            try
-                eval([cmdSel0,';']);
-            catch
-                fprintf('Feature "%s" not used\n',ftsName0)
-                x = nan(nEvt,1);
-            end
-            ftsTb(ftsCnt,:) = reshape(x,1,[]);
-            ftsName1 = [ftsName0,' - landmark ',num2str(xxLmk)];
-            ftsName{ftsCnt} = ftsName1;
-            ftsCnt = ftsCnt + 1;
-        end
-    elseif ~isempty(strfind(cmdSel0,'xxDi')) %#ok<STREMP>
-        for xxDi=1:4
-            try
-                eval([cmdSel0,';']);
-                ftsTb(ftsCnt,:) = reshape(x,1,[]);
-            catch
-                fprintf('Feature "%s" not used\n',ftsName0)
-                ftsTb(ftsCnt,:) = nan;
-            end            
-            ftsName1 = [ftsName0,' - ',dixx{xxDi}];
-            ftsName{ftsCnt} = ftsName1;
-            ftsCnt = ftsCnt + 1;
-        end
-    else
-        try
-            eval([cmdSel0,';']);
-            ftsTb(ftsCnt,:) = reshape(x,1,[]);            
-        catch
-            fprintf('Feature "%s" not used\n',ftsName0)
-            ftsTb(ftsCnt,:) = nan;
-        end
-        ftsName{ftsCnt} = ftsName0;
-        ftsCnt = ftsCnt + 1;
-    end
-end
-featureTable = table(ftsTb,'RowNames',ftsName);
-writetable(featureTable,feature_path,'WriteVariableNames',0,'WriteRowNames',1);
+fprintf("\nStarting to save ... \n");
+tic;
+save_to_h5(h5_path, datOrg, '/res/datOrg');
+save_to_h5(h5_path, opts, '/res/opts');
+save_to_h5(h5_path, evtLstE, '/res/evt');
+save_to_h5(h5_path, ftsLstE, '/res/fts');
+save_to_h5(h5_path, dffMatE, '/res/dffMat');
+save_to_h5(h5_path, dMatE, '/res/dMat');
+save_to_h5(h5_path, riseLstE, '/res/rise');
+save_to_h5(h5_path, datRE, '/res/datR');
+toc;
 
-fprintf("Exported Feature table");
+
 fprintf("\nProcessing finished.");
