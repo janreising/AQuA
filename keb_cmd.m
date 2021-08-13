@@ -14,7 +14,7 @@ f0 = strcat(name,ext);
 path0 = [p0,name,filesep];
 
 feature_path = strcat(p0,name,'_FeatureTable.xlsx');
-h5path = strcat(p0,name,'_AQuA.h5');
+h5_path = strcat(p0,name,'_AQuA.h5');
 
 %% determine preset
 
