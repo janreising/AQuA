@@ -19,7 +19,7 @@ function r = save_to_h5(out_path, obj, loc)
         
     elseif isa(obj, 'double')
         try
-            h5create(out_path, loc, size(obj), 'Datatype', 'double');
+            h5create(out_path, loc, size(obj), 'Datatype', 'double', 'ChunkSize', [100 100 100]); % try to fix saving problem with double size
             h5write(out_path, loc, obj);
         catch
             warning("There was a problem writing a double");
@@ -39,6 +39,7 @@ function r = save_to_h5(out_path, obj, loc)
         
         % convert to string since char is not supported
         obj = convertCharsToStrings(obj);
+        obj = strcat(obj);
 	try
         	h5create(out_path, loc, size(obj), 'Datatype', 'string');
         	h5write(out_path, loc, obj);
