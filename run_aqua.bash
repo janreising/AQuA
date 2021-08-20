@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH -A SNIC2020-9-180
 #SBATCH --time=02:00:00
-#SBATCH -c 28
-##SBATCH -p largemem
+#SBATCH -c 7
+#SBATCH -p largemem
 ##SBATCH --mem 768G
 #SBATCH -J janrei_aqua
 
