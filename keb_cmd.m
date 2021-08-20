@@ -20,7 +20,7 @@ h5_path = strcat(p0,name,'_AQuA.h5');
 
 %{
 if contains(name, "10X") & contains(name, "ch2")
-    preset = 1;
+    preset = 1;cc
 elseif contains(name, "20X") & contains(name, "ch1")
     preset = 2;
 elseif contains(name, "20X") & contains(name, "ch2")
