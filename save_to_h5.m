@@ -32,7 +32,7 @@ function r = save_to_h5(out_path, obj, loc)
         
     elseif isa(obj, 'single')
         
-        h5create(out_path, loc, size(obj), 'Datatype', 'single');
+        h5create(out_path, loc, size(obj), 'Datatype', 'single', 'ChunkSize', [100 100 100]);
         h5write(out_path, loc, obj);
         
     elseif isa(obj, 'char')
