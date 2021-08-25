@@ -116,16 +116,3 @@ function r = save_to_h5(out_path, obj, loc)
     r = true;
 
 end
-
-
-s = size(dMatE);
-z = size(s);
-chunk = zeros(z);
-for i=1:z(2)
-    if s(i) > 100
-        chunk(i)=100;
-    else
-        chunk(i)=Inf;
-    end
-end
-chunk
