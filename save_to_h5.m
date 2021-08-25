@@ -19,7 +19,14 @@ function r = save_to_h5(out_path, obj, loc)
         
     elseif isa(obj, 'double')
         try
-            h5create(out_path, loc, size(obj), 'Datatype', 'double', size(obj)); 
+            
+            z = size(size(obj));
+            chunk = zeros(z);
+            for i=1:z(2)
+                a(i)=100;
+            end
+            
+            h5create(out_path, loc, size(obj), 'Datatype', 'double', 'ChunkSize', chunk); 
             h5write(out_path, loc, obj);
         catch e
             warning("There was a problem writing a double");
@@ -38,7 +45,13 @@ function r = save_to_h5(out_path, obj, loc)
     elseif isa(obj, 'single')
         
         try
-            h5create(out_path, loc, size(obj), 'Datatype', 'single', size(obj));
+            z = size(size(obj));
+            chunk = zeros(z);
+            for i=1:z(2)
+                a(i)=100;
+            end
+            
+            h5create(out_path, loc, size(obj), 'Datatype', 'single', 'ChunkSize', chunk);
             h5write(out_path, loc, obj);
         
         catch e
@@ -93,3 +106,7 @@ function r = save_to_h5(out_path, obj, loc)
     r = true;
 
 end
+
+
+
+
