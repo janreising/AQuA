@@ -19,13 +19,7 @@ function r = save_to_h5(out_path, obj, loc)
         
     elseif isa(obj, 'double')
         try
-            
-            if prod(size(obj)) > 100*100*100
-                h5create(out_path, loc, size(obj), 'Datatype', 'double', 'ChunkSize', [100 100 100]); % try to fix saving problem with double size
-            else
-                h5create(out_path, loc, size(obj), 'Datatype', 'double'); % try to fix saving problem with double size
-            end
-            
+            h5create(out_path, loc, size(obj), 'Datatype', 'double', size(obj)); 
             h5write(out_path, loc, obj);
         catch e
             warning("There was a problem writing a double");
@@ -44,12 +38,7 @@ function r = save_to_h5(out_path, obj, loc)
     elseif isa(obj, 'single')
         
         try
-            if prod(size(obj)) > 100*100*100
-                h5create(out_path, loc, size(obj), 'Datatype', 'single', 'ChunkSize', [100 100 100]);
-            else
-                h5create(out_path, loc, size(obj), 'Datatype', 'single');
-            end
-        	
+            h5create(out_path, loc, size(obj), 'Datatype', 'single', size(obj));
             h5write(out_path, loc, obj);
         
         catch e
