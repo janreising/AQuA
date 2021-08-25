@@ -20,10 +20,15 @@ function r = save_to_h5(out_path, obj, loc)
     elseif isa(obj, 'double')
         try
             
-            z = size(size(obj));
+            s = size(obj);
+            z = size(s);
             chunk = zeros(z);
             for i=1:z(2)
-                chunk(i)=100;
+                if s(i) > 100
+                    chunk(i)=100;
+                else
+                    chunk(i)=Inf;
+                end
             end
             
             h5create(out_path, loc, size(obj), 'Datatype', 'double', 'ChunkSize', chunk); 
@@ -45,10 +50,15 @@ function r = save_to_h5(out_path, obj, loc)
     elseif isa(obj, 'single')
         
         try
-            z = size(size(obj));
+            s = size(obj);
+            z = size(s);
             chunk = zeros(z);
             for i=1:z(2)
-                chunk(i)=100;
+                if s(i) > 100
+                    chunk(i)=100;
+                else
+                    chunk(i)=Inf;
+                end
             end
             
             h5create(out_path, loc, size(obj), 'Datatype', 'single', 'ChunkSize', chunk);
@@ -108,5 +118,14 @@ function r = save_to_h5(out_path, obj, loc)
 end
 
 
-
-
+s = size(dMatE);
+z = size(s);
+chunk = zeros(z);
+for i=1:z(2)
+    if s(i) > 100
+        chunk(i)=100;
+    else
+        chunk(i)=Inf;
+    end
+end
+chunk
