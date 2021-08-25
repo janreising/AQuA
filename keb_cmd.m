@@ -5,7 +5,8 @@ load('random_Seed');
 rng(s);
 
 %preset = 2;
-%file = "/media/carmichael/LaCie SSD/JR/data/ca_imaging/15.07.21/slice2/2-40X-loc1.dwn.final.h5";
+%file = "/media/carmichael/LaCie SSD/delete/1-40X-loc1.zip.h5";
+%run keb_cmd.m
 
 %% save path
 [folder, name, ext] = fileparts(file);

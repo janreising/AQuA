@@ -19,7 +19,13 @@ function r = save_to_h5(out_path, obj, loc)
         
     elseif isa(obj, 'double')
         try
-            h5create(out_path, loc, size(obj), 'Datatype', 'double', 'ChunkSize', [100 100 100]); % try to fix saving problem with double size
+            
+            if prod(size(obj)) > 100*100*100
+                h5create(out_path, loc, size(obj), 'Datatype', 'double', 'ChunkSize', [100 100 100]); % try to fix saving problem with double size
+            else
+                h5create(out_path, loc, size(obj), 'Datatype', 'double'); % try to fix saving problem with double size
+            end
+            
             h5write(out_path, loc, obj);
         catch
             warning("There was a problem writing a double");
@@ -32,27 +38,35 @@ function r = save_to_h5(out_path, obj, loc)
         
     elseif isa(obj, 'single')
         
-        h5create(out_path, loc, size(obj), 'Datatype', 'single', 'ChunkSize', [100 100 100]);
+        if prod(size(obj)) > 100*100*100
+            h5create(out_path, loc, size(obj), 'Datatype', 'single', 'ChunkSize', [100 100 100]);
+        else
+            h5create(out_path, loc, size(obj), 'Datatype', 'single');
+        end
+        	
         h5write(out_path, loc, obj);
         
-    elseif isa(obj, 'char')
+    elseif isa(obj, 'char') || isa(obj, 'string')
         
         % convert to string since char is not supported
-        obj = convertCharsToStrings(obj);
+        if isa(obj, 'char')
+            obj = convertCharsToStrings(obj);
+        end
         obj = strcat(obj);
-	try
-        	h5create(out_path, loc, size(obj), 'Datatype', 'string');
-        	h5write(out_path, loc, obj);
-	catch
-		warning("There was a problem writing a string");
-		disp(loc);
-		disp(obj);
-		disp(class(obj));
         
-        temp_name = [out_path,loc,'.m']
-        save temp_name obj
-        
-	end
+        try
+                h5create(out_path, loc, size(obj), 'Datatype', 'string');
+                h5write(out_path, loc, obj);
+        catch
+            warning("There was a problem writing a string");
+            disp(loc);
+            disp(obj);
+            disp(class(obj));
+
+            temp_name = [out_path,loc,'.m']
+            save temp_name obj
+
+        end
         
     elseif isinteger(obj)
         
