@@ -36,7 +36,7 @@ function r = save_to_h5(out_path, obj, loc)
             disp(class(obj));
             
             temporary_name = [out_path,loc,'.m'];
-            save temporary_name obj
+            save temporary_name obj;
         end
         
         return
@@ -62,7 +62,7 @@ function r = save_to_h5(out_path, obj, loc)
             disp(class(obj));
             
             temporary_name = [out_path,loc,'.m'];
-            save temporary_name obj
+            save temporary_name obj;
             
         end
             
@@ -86,7 +86,7 @@ function r = save_to_h5(out_path, obj, loc)
             disp(class(obj));
 
             temporary_name = [out_path,loc,'.m'];
-            save temporary_name obj
+            save temporary_name obj;
 
         end
         
