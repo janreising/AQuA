@@ -29,23 +29,43 @@ function r = save_to_h5(out_path, obj, loc)
             h5write(out_path, loc, obj);
         catch
             warning("There was a problem writing a double");
+            fprintf(1,'The identifier was:\n%s',e.identifier);
+            fprintf(1,'There was an error! The message was:\n%s',e.message);
             disp(loc);
             disp(size(obj));
             disp(class(obj));
+            
+            temporary_name = [out_path,loc,'.m'];
+            save temporary_name obj
         end
         
         return
         
     elseif isa(obj, 'single')
         
-        if prod(size(obj)) > 100*100*100
-            h5create(out_path, loc, size(obj), 'Datatype', 'single', 'ChunkSize', [100 100 100]);
-        else
-            h5create(out_path, loc, size(obj), 'Datatype', 'single');
-        end
+        try
+            if prod(size(obj)) > 100*100*100
+                h5create(out_path, loc, size(obj), 'Datatype', 'single', 'ChunkSize', [100 100 100]);
+            else
+                h5create(out_path, loc, size(obj), 'Datatype', 'single');
+            end
         	
-        h5write(out_path, loc, obj);
+            h5write(out_path, loc, obj);
         
+        catch
+           
+            warning("There was a problem writing a single");
+            fprintf(1,'The identifier was:\n%s',e.identifier);
+            fprintf(1,'There was an error! The message was:\n%s',e.message);
+            disp(loc);
+            disp(size(obj));
+            disp(class(obj));
+            
+            temporary_name = [out_path,loc,'.m'];
+            save temporary_name obj
+            
+        end
+            
     elseif isa(obj, 'char') || isa(obj, 'string')
         
         % convert to string since char is not supported
@@ -59,12 +79,14 @@ function r = save_to_h5(out_path, obj, loc)
                 h5write(out_path, loc, obj);
         catch
             warning("There was a problem writing a string");
+            fprintf(1,'The identifier was:\n%s',e.identifier);
+            fprintf(1,'There was an error! The message was:\n%s',e.message);
             disp(loc);
             disp(obj);
             disp(class(obj));
 
-            temp_name = [out_path,loc,'.m']
-            save temp_name obj
+            temporary_name = [out_path,loc,'.m'];
+            save temporary_name obj
 
         end
         
