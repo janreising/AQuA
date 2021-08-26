@@ -18,7 +18,7 @@ function [dat,opts] = prep1(p0,f0,rgT,opts,ff)
         maxImg = -1;
     elseif endsWith(f0, '.h5')
         fprintf('Loading h5 file\n');
-        dat = h5read(strcat(p0,f0),'/cnmfe/ast'); %[1 1 1], [400 600 600]
+        dat = h5read(strcat(p0,f0),'/dff/ast'); %[1 1 1], [400 600 600]
         maxImg = -1;
         fprintf('Loading finished.\n');
     else
