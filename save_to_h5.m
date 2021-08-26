@@ -27,10 +27,11 @@ function r = save_to_h5(out_path, obj, loc)
                 if s(i) > 100
                     chunk(i)=100;
                 else
-                    chunk(i)=s(i)+1;
+                    chunk(i)=s(i);
                 end
             end
-            fprintf(1,'The chunk was:\n%s',chunk);
+            fprintf(1,'The chunk was:\n%s');
+            disp(chunk);
             
             h5create(out_path, loc, size(obj), 'Datatype', 'double', 'ChunkSize', chunk); 
             h5write(out_path, loc, obj);
@@ -42,7 +43,7 @@ function r = save_to_h5(out_path, obj, loc)
             disp(size(obj));
             disp(class(obj));
             
-            temporary_name = strcat(out_path,strrep(loc,"/","-"),'.m');
+            temporary_name = strcat(out_path,strrep(loc,"/","-"),'.mat');
             disp(temporary_name);
             save temporary_name obj;
         end
@@ -59,10 +60,11 @@ function r = save_to_h5(out_path, obj, loc)
                 if s(i) > 100
                     chunk(i)=100;
                 else
-                    chunk(i)=s(i)+1;
+                    chunk(i)=s(i);
                 end
             end
-            fprintf(1,'The chunk was:\n%s',chunk);
+            fprintf(1,'The chunk was:\n%s');
+            disp(chunk);
             
             h5create(out_path, loc, size(obj), 'Datatype', 'single', 'ChunkSize', chunk);
             h5write(out_path, loc, obj);
@@ -76,7 +78,7 @@ function r = save_to_h5(out_path, obj, loc)
             disp(size(obj));
             disp(class(obj));
             
-            temporary_name = strcat(out_path,strrep(loc,"/","-"),'.m');
+            temporary_name = strcat(out_path,strrep(loc,"/","-"),'.mat');
             disp(temporary_name);
             save temporary_name obj;
             
@@ -101,7 +103,7 @@ function r = save_to_h5(out_path, obj, loc)
             disp(obj);
             disp(class(obj));
 
-            temporary_name = strcat(out_path,strrep(loc,"/","-"),'.m');
+            temporary_name = strcat(out_path,strrep(loc,"/","-"),'.mat');
             disp(temporary_name);
             save temporary_name obj;
 
