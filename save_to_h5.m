@@ -27,7 +27,7 @@ function r = save_to_h5(out_path, obj, loc)
                 if s(i) > 100
                     chunk(i)=100;
                 else
-                    chunk(i)=Inf;
+                    chunk(i)=s(i);
                 end
             end
             
@@ -41,7 +41,8 @@ function r = save_to_h5(out_path, obj, loc)
             disp(size(obj));
             disp(class(obj));
             
-            temporary_name = [out_path,loc,'.m'];
+            temporary_name = [out_path,strrep(loc,"/","-"),'.m'];
+            disp(temporary_name);
             save temporary_name obj;
         end
         
@@ -57,7 +58,7 @@ function r = save_to_h5(out_path, obj, loc)
                 if s(i) > 100
                     chunk(i)=100;
                 else
-                    chunk(i)=Inf;
+                    chunk(i)=s(i);
                 end
             end
             
@@ -73,7 +74,8 @@ function r = save_to_h5(out_path, obj, loc)
             disp(size(obj));
             disp(class(obj));
             
-            temporary_name = [out_path,loc,'.m'];
+            temporary_name = [out_path,strrep(loc,"/","-"),'.m'];
+            disp(temporary_name);
             save temporary_name obj;
             
         end
@@ -97,7 +99,8 @@ function r = save_to_h5(out_path, obj, loc)
             disp(obj);
             disp(class(obj));
 
-            temporary_name = [out_path,loc,'.m'];
+            temporary_name = [out_path,strrep(loc,"/","-"),'.m'];
+            disp(temporary_name);
             save temporary_name obj;
 
         end
