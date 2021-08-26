@@ -39,6 +39,7 @@ function r = save_to_h5(out_path, obj, loc)
             end
             fprintf(1,'The chunk was:\n%s');
             disp(chunk);
+            disp(size(obj));
             
             h5create(out_path, loc, size(obj), 'Datatype', 'double', 'ChunkSize', chunk); 
             h5write(out_path, loc, obj);
@@ -79,6 +80,7 @@ function r = save_to_h5(out_path, obj, loc)
             
             fprintf(1,'The chunk was:\n%s');
             disp(chunk);
+            disp(size(obj));
             
             h5create(out_path, loc, size(obj), 'Datatype', 'single', 'ChunkSize', chunk);
             h5write(out_path, loc, obj);
