@@ -25,10 +25,17 @@ function r = save_to_h5(out_path, obj, loc)
             chunk = zeros(z);
             for i=1:z(2)
                 if s(i) > 100
-                    chunk(i)=100;
+                    c=100;
                 else
-                    chunk(i)=s(i);
+                    c=s(i);
                 end
+                
+                if c == 0
+                    c=1;
+                end
+                
+                chunk(i)=c;
+                
             end
             fprintf(1,'The chunk was:\n%s');
             disp(chunk);
@@ -53,16 +60,23 @@ function r = save_to_h5(out_path, obj, loc)
     elseif isa(obj, 'single')
         
         try
-            s = size(obj);
+                        s = size(obj);
             z = size(s);
             chunk = zeros(z);
             for i=1:z(2)
                 if s(i) > 100
-                    chunk(i)=100;
+                    c=100;
                 else
-                    chunk(i)=s(i);
+                    c=s(i);
                 end
+                
+                if c == 0
+                    c=1;
+                end
+                
+                chunk(i)=c;
             end
+            
             fprintf(1,'The chunk was:\n%s');
             disp(chunk);
             
