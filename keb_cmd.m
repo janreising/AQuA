@@ -5,7 +5,7 @@ load('random_Seed');
 rng(s);
 
 %preset = 2;
-%file = "/media/carmichael/LaCie SSD/delete/1-40X-loc1.zip.h5";
+%file = "/media/janrei1/LaCie SSD/delete/1-40X-loc1.zip.h5";
 %run keb_cmd.m
 
 %% save path
