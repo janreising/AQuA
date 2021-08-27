@@ -17,42 +17,62 @@ path0 = [p0,name,filesep];
 feature_path = strcat(p0,name,'_FeatureTable.xlsx');
 h5_path = strcat(p0,name,'_AQuA.h5');
 
-%% determine preset
-
-%{
-if contains(name, "10X") & contains(name, "ch2")
-    preset = 1;cc
-elseif contains(name, "20X") & contains(name, "ch1")
-    preset = 2;
-elseif contains(name, "20X") & contains(name, "ch2")
-    preset = 3;
-else
-    %fprintf("Cannot choose preset automatically. Stopping the run!");
-    %return
-    preset = 2;
-    fprintf("Cannot choose automatically. Choosing 2");
-end
-%}
-
 %% options
-opts = util.parseParam(preset,1);
+%opts = util.parseParam(preset,1);
 
-% opts.smoXY = 1;
-% opts.thrARScl = 2;
-% opts.movAvgWin = 15;
-% opts.minSize = 8;
-% opts.regMaskGap = 0;
-% opts.thrTWScl = 5;
-% opts.thrExtZ = 0.5;
-% opts.extendSV = 1;
-% opts.cRise = 1;
-% opts.cDelay = 2;
-% opts.zThr = 3;
-% opts.getTimeWindowExt = 10000;
-% opts.seedNeib = 5;
-% opts.seedRemoveNeib = 5;
-% opts.thrSvSig = 1;
-% opts.extendEvtRe = 0;
+
+opts = {};
+opts.minSize = 50;  % minimum size
+opts.smoXY = 0.5; % spatial smoothing level
+opts.thrARScl = 1.3; % active voxel threshold % 1.5
+
+opts.thrTWScl = 5; % temporal cut threshold % 1.5
+opts.thrExtZ = 3; % Seed growing threshold %1.5
+
+opts.cDelay = 1; % Slowest propagation
+opts.cRise = 1; % rising phase uncertainty
+opts.gtwSmo = 2; % GTW smoothness term
+opts.maxStp = 11; % GTW windows size
+opts.zThr = 6; % Z score threshold for events
+
+opts.ignoreMerge = 0; % 0 % Ignore merging step
+opts.mergeEventDiscon = 10; % 10 % Maximum merging distance
+opts.mergeEventCorr = 1; % 1 % Minimum merging correlation
+opts.mergeEventMaxTimeDif = 2; % 2 % Maximum merging time difference
+
+
+opts.regMaskGap = 1; % Remove pixels close to image boundary
+opts.usePG = 1; % Poisson noise model
+opts.cut = 200; % Frames per segment
+opts.movAvgWin = 25; % Baseline window
+opts.extendSV = 1; % Extend super voxels temporally
+opts.legacyModeActRun = 1; % Older code for active voxels
+opts.getTimeWindowExt = 50; % Time window detection range
+opts.seedNeib = 1; % Pixels for window detection
+opts.seedRemoveNeib = 2; % Remove seeds
+opts.thrSvSig = 4; % Super voxel significance
+opts.gapExt = 5; % Check more time
+opts.superEventdensityFirst = 1; % Super events prefer larger
+opts.gtwGapSeedRatio = 4; % Area ratio to find seed curve
+opts.gtwGapSeedMin = 5; % Area to find seed curve
+opts.cOver = 0.2; % Spatial overlap threshold
+opts.minShow1 = 0.2; % Event show threshold on raw data
+opts.minShowEvtGUI = 0; % GUI event boundary threshold
+opts.ignoreTau = 0; % Ignore decay tau calculation
+opts.correctTrend = 1; % Correct baseline trend
+opts.extendEvtRe = 0; % Extend event temporally after merging
+opts.propthrmin = 0.2; % Propagation threshold minimum
+opts.propthrstep = 0.1; % Propagation threshold step
+opts.propthrmax = 0.8; % Propagation threshold maximum
+
+opts.frameRate = 0.125; % Frame rate
+opts.spatialRes = 0.55; % Spatial resolution
+opts.varEst = 0.02; % Estimated noise variance
+opts.fgFluo = 0; % Foreground threshold
+opts.bgFluo = 0; % Background threshold
+opts.northx = 0; % X cooridante for north vector
+opts.northy = 1; % Y cooridante for north vector
+opts.skipSteps = 1; % Skip step2 and 3
 
 [datOrg,opts] = burst.prep1(p0,f0,[],opts);  % read data
 

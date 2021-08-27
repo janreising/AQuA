@@ -37,9 +37,6 @@ function r = save_to_h5(out_path, obj, loc)
                 chunk(i)=c;
                 
             end
-            fprintf(1,'The chunk was:\n%s');
-            disp(chunk);
-            disp(size(obj));
             
             h5create(out_path, loc, size(obj), 'Datatype', 'double', 'ChunkSize', chunk); 
             h5write(out_path, loc, obj);
@@ -78,10 +75,6 @@ function r = save_to_h5(out_path, obj, loc)
                 chunk(i)=c;
             end
             
-            fprintf(1,'The chunk was:\n%s');
-            disp(chunk);
-            disp(size(obj));
-            
             h5create(out_path, loc, size(obj), 'Datatype', 'single', 'ChunkSize', chunk);
             h5write(out_path, loc, obj);
         
@@ -112,7 +105,7 @@ function r = save_to_h5(out_path, obj, loc)
                 h5create(out_path, loc, size(obj), 'Datatype', 'string');
                 h5write(out_path, loc, obj);
         catch e
-            warning("There was a problem writing a string");
+            warning("There was a problem writing a string:\n");
             fprintf(1,'The identifier was:\n%s',e.identifier);
             fprintf(1,'There was an error! The message was:\n%s',e.message);
             disp(loc);
