@@ -5,7 +5,7 @@ load('random_Seed');
 rng(s);
 
 %preset = 2;
-%file = "/media/janrei1/LaCie SSD/delete/1-40X-loc1.zip.h5";
+%file = "/media/janrei1/LaCie SSD/delete/slice6/2-40X-loc1.short.zip.h5";
 %run keb_cmd.m
 
 %% save path
@@ -24,10 +24,10 @@ h5_path = strcat(p0,name,'_AQuA.h5');
 opts = {};
 opts.minSize = 50;  % minimum size
 opts.smoXY = 0.5; % spatial smoothing level
-opts.thrARScl = 1.3; % active voxel threshold % 1.5
+opts.thrARScl = 1; % active voxel threshold % 1.5
 
-opts.thrTWScl = 5; % temporal cut threshold % 1.5
-opts.thrExtZ = 3; % Seed growing threshold %1.5
+% opts.thrTWScl = 5; % temporal cut threshold % 1.5
+% opts.thrExtZ = 3; % Seed growing threshold %1.5
 
 opts.cDelay = 1; % Slowest propagation
 opts.cRise = 1; % rising phase uncertainty
@@ -72,7 +72,7 @@ opts.fgFluo = 0; % Foreground threshold
 opts.bgFluo = 0; % Background threshold
 opts.northx = 0; % X cooridante for north vector
 opts.northy = 1; % Y cooridante for north vector
-opts.skipSteps = 1; % Skip step2 and 3
+opts.skipSteps = 0; % Skip step2 and 3
 
 [datOrg,opts] = burst.prep1(p0,f0,[],opts);  % read data
 
@@ -124,7 +124,7 @@ if exist(h5_path, 'file') == 2
     fprintf("\nFile already exists. Choosing new name:\n");
 
     [folder, name, ext] = fileparts(h5_path);
-    h5_path = [tempname(folder),'_',name,ext];
+    h5_path = strcat(tempname(folder),'_',name,ext);
 
     disp(h5_path);
 end
