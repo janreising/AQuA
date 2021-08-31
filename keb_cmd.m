@@ -7,7 +7,6 @@ rng(s);
 %preset = 2;
 %file = "/media/janrei1/LaCie SSD/delete/slice6/2-40X-loc1.short.zip.h5";
 
-
 %% save path
 [folder, name, ext] = fileparts(file);
 p0 = strcat(folder,filesep);
@@ -28,12 +27,12 @@ end
 
 
 opts = {};
-opts.minSize = 50;  % minimum size
-opts.smoXY = 0.5; % spatial smoothing level
-opts.thrARScl = 1; % active voxel threshold % 1.5
+opts.minSize = 10;  % minimum size % 50
+opts.smoXY = 0.1; % spatial smoothing level % 0.5
+opts.thrARScl = 3; % active voxel threshold % 1.5
 
-% opts.thrTWScl = 5; % temporal cut threshold % 1.5
-% opts.thrExtZ = 3; % Seed growing threshold %1.5
+opts.thrTWScl = 10; % temporal cut threshold % 1.5
+opts.thrExtZ = 3; % Seed growing threshold %1.5
 
 opts.cDelay = 1; % Slowest propagation
 opts.cRise = 1; % rising phase uncertainty
@@ -66,7 +65,7 @@ opts.minShow1 = 0.2; % Event show threshold on raw data
 opts.minShowEvtGUI = 0; % GUI event boundary threshold
 opts.ignoreTau = 0; % Ignore decay tau calculation
 opts.correctTrend = 1; % Correct baseline trend
-opts.extendEvtRe = 0; % Extend event temporally after merging
+opts.extendEvtRe = 1; % Extend event temporally after merging
 opts.propthrmin = 0.2; % Propagation threshold minimum
 opts.propthrstep = 0.1; % Propagation threshold step
 opts.propthrmax = 0.8; % Propagation threshold maximum
