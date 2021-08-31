@@ -6,7 +6,7 @@ rng(s);
 
 %preset = 2;
 %file = "/media/janrei1/LaCie SSD/delete/slice6/2-40X-loc1.short.zip.h5";
-%run keb_cmd.m
+
 
 %% save path
 [folder, name, ext] = fileparts(file);
@@ -15,7 +15,13 @@ f0 = strcat(name,ext);
 path0 = [p0,name,filesep];
 
 feature_path = strcat(p0,name,'_FeatureTable.xlsx');
-h5_path = strcat(p0,name,'_AQuA.h5');
+
+if ~exist('indices','var')
+    indices = [1 Inf];
+    h5_path = strcat(p0,name,'_AQuA.h5');
+else
+    h5_path = strcat(p0,name,'_',string(indices(1)),'_',string(indices(2)),'_AQuA.h5');
+end
 
 %% options
 %opts = util.parseParam(preset,1);
@@ -74,7 +80,7 @@ opts.northx = 0; % X cooridante for north vector
 opts.northy = 1; % Y cooridante for north vector
 opts.skipSteps = 0; % Skip step2 and 3
 
-[datOrg,opts] = burst.prep1(p0,f0,[],opts);  % read data
+[datOrg,opts] = burst.prep1(p0,f0,[],opts,[], indices);  % read data
 
 %% detection
 [dat,dF,arLst,lmLoc,opts,dL] = burst.actTop(datOrg,opts);  % foreground and seed detection
