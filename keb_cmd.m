@@ -20,6 +20,8 @@ if ~exist('indices','var')
     h5_path = strcat(p0,name,'_AQuA.h5');
 else
     h5_path = strcat(p0,name,'_',string(indices(1)),'_',string(indices(2)),'_AQuA.h5');
+    fprintf("Indices provided! Saving to ...");
+    disp(h5_path);
 end
 
 %% options
