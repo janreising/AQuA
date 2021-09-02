@@ -6,6 +6,7 @@ rng(s);
 
 %preset = 2;
 %file = "/media/janrei1/LaCie SSD/delete/slice6/2-40X-loc1.short.zip.h5";
+%file = "/run/user/1309838470/gvfs/smb-share:server=storage.ad.cmm.se,share=tank/users/janrei/Groups/Eric Herlenius/Jan_Reising/DATA/ca_imaging/15.07.21/slice3/1-10X-loc1.h5"
 
 %% save path
 [folder, name, ext] = fileparts(file);
@@ -16,11 +17,12 @@ path0 = [p0,name,filesep];
 feature_path = strcat(p0,name,'_FeatureTable.xlsx');
 
 if ~exist('indices','var')
+    fprintf("Indices doesn't exist");
     indices = [1 Inf];
     h5_path = strcat(p0,name,'_AQuA.h5');
 else
     h5_path = strcat(p0,name,'_',string(indices(1)),'_',string(indices(2)),'_AQuA.h5');
-    fprintf("Indices provided! Saving to ...");
+    fprintf("Indices provided!\n Saving to ...");
     disp(h5_path);
 end
 
