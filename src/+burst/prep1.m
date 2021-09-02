@@ -23,6 +23,7 @@ function [dat,opts] = prep1(p0,f0,rgT,opts,ff,indices)
             indices = [1 Inf];
         end
         
+        disp(h5info(strcat(p0,f0)));
         dat = h5read(strcat(p0,f0),'/dff/ast', [1 1 indices(1)], [Inf Inf indices(2)]);
         maxImg = -1;
         fprintf('Loading finished.\n');
