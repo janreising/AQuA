@@ -93,7 +93,7 @@ function r = save_to_h5(out_path, obj, loc)
             
         end
             
-    elseif isa(obj, 'char') || isa(obj, 'string')
+    elseif isa(obj, 'char')
         
         % convert to string since char is not supported
         if isa(obj, 'char')
@@ -117,6 +117,11 @@ function r = save_to_h5(out_path, obj, loc)
             save temporary_name obj;
 
         end
+        
+    elseif isa(obj, 'string')
+        
+        fprintf("Can't save strings:");
+        disp(obj);
         
     elseif isinteger(obj)
         
