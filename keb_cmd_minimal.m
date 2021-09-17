@@ -7,7 +7,9 @@ rng(s);
 %preset = 2;
 %file = "/media/janrei1/LaCie SSD/delete/slice6/2-40X-loc1.short.zip.h5";
 %file = "/media/carmichael/1TB/delete/1-40X-loc1.zip.h5"
-%indices = [1 100]
+%file = "E:\delete\1-40X-loc1.zip.h5"
+%file = "E:\delete\test.tiff"
+%indices = [1 500]
 
 %% save path
 [folder, name, ext] = fileparts(file);
@@ -37,8 +39,8 @@ opts.minSize = 50;  % minimum size % 50 % orig 10
 opts.smoXY = 1; % spatial smoothing level % 0.5 % orig 0.1
 opts.thrARScl = 3; % active voxel threshold % 1.5
 
-opts.thrTWScl = 10; % temporal cut threshold % 1.5
-opts.thrExtZ = 3; % Seed growing threshold %1.5
+opts.thrTWScl = 0; % temporal cut threshold % 1.5
+opts.thrExtZ = 0; % Seed growing threshold %1.5
 
 opts.cDelay = 1; % Slowest propagation
 opts.cRise = 1; % rising phase uncertainty
@@ -88,6 +90,9 @@ opts.skipSteps = 0; % Skip step2 and 3
 
 %% detection
 [dat,dF,arLst,lmLoc,opts,dL] = burst.actTop(datOrg,opts);  % foreground and seed detection
+
+% this steps uses thrTWScl & thrExtZ; filtering out a substantial portion
+% of possible events (based on GUI output)
 [svLst,~,riseX] = burst.spTop(dat,dF,lmLoc,[],opts);  % super voxel detection
 
 [riseLst,datR,evtLst,seLst] = burst.evtTop(dat,dF,svLst,riseX,opts);  % events
@@ -118,18 +123,6 @@ end
 [ftsLstE,dffMatE,dMatE] = fea.getFeaturesTop(datOrg,evtLstE,opts);
 ftsLstE = fea.getFeaturesPropTop(dat,datRE,evtLstE,ftsLstE,opts);
 
-%{
-% update network features
-sz = size(datOrg);
-evtx1 = evtLstE;
-ftsLstE.networkAll = [];
-ftsLstE.network = [];
-try
-    ftsLstE.networkAll = fea.getEvtNetworkFeatures(evtLstE,sz);  % all filtered events
-    ftsLstE.network = fea.getEvtNetworkFeatures(evtx1,sz);  % events inside cells only
-catch
-end
-%}
 
 %% export to h5
 if exist(h5_path, 'file') == 2
