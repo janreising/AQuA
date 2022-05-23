@@ -1,13 +1,6 @@
-%% setup
-% -- preset 1: in vivo. 2: ex vivo. 3: GluSnFR
 startup;  % initialize
 load('random_Seed');
 rng(s);
-
-%preset = 2;
-%file = "/media/janrei1/LaCie SSD/delete/slice6/2-40X-loc1.short.zip.h5";
-%file = "/media/carmichael/1TB/delete/1-40X-loc1.zip.h5"
-%indices = [1 100]
 
 %% save path
 [folder, name, ext] = fileparts(file);
@@ -31,7 +24,6 @@ end
 %% options
 %opts = util.parseParam(preset,1);
 
-
 opts = {};
 opts.minSize = 50;  % minimum size % 50 % orig 10
 opts.smoXY = 1; % spatial smoothing level % 0.5 % orig 0.1
@@ -50,7 +42,6 @@ opts.ignoreMerge = 0; % 0 % Ignore merging step
 opts.mergeEventDiscon = 10; % 10 % Maximum merging distance
 opts.mergeEventCorr = 1; % 1 % Minimum merging correlation
 opts.mergeEventMaxTimeDif = 2; % 2 % Maximum merging time difference
-
 
 opts.regMaskGap = 1; % Remove pixels close to image boundary
 opts.usePG = 1; % Poisson noise model
@@ -89,9 +80,33 @@ opts.skipSteps = 0; % Skip step2 and 3
 
 %% detection
 [dat,dF,arLst,lmLoc,opts,dL] = burst.actTop(datOrg,opts);  % foreground and seed detection
-[svLst,~,riseX] = burst.spTop(dat,dF,lmLoc,[],opts);  % super voxel detection
 
-[riseLst,datR,evtLst,seLst] = burst.evtTop(dat,dF,svLst,riseX,opts);  % events
+if opts.skipSteps>0
+
+    svLst = arLst;
+    riseX = [];
+
+    evtLst = svLst;
+    seLst = evtLst;
+    datR = 255*ones(size(dat));
+    riseLst = cell(0);
+    H = opts.sz(1);
+    W = opts.sz(2);
+    for i = 1:numel(evtLst)
+        rr = [];
+        rr.dlyMap = zeros(H,W);
+        rr.rgh = 1:H;
+        rr.rgw = 1:W;
+        riseLst{i} = rr;
+    end
+
+else
+    %% -----> should be skipped
+    [svLst,~,riseX] = burst.spTop(dat,dF,lmLoc,[],opts);  % super voxel detection
+    [riseLst,datR,evtLst,seLst] = burst.evtTop(dat,dF,svLst,riseX,opts);  % events
+    %% <-----
+end
+
 [ftsLst,dffMat] = fea.getFeatureQuick(dat,evtLst,opts);
 
 % fitler by significance level
@@ -151,6 +166,5 @@ save_to_h5(h5_path, dMatE, '/res/dMat');
 save_to_h5(h5_path, riseLstE, '/res/rise');
 save_to_h5(h5_path, datRE, '/res/datR');
 toc;
-
 
 fprintf("\nProcessing finished.");
