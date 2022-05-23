@@ -128,7 +128,9 @@ class ActTop():
 
             # element-wise squared distance to last frame
 
-            #
+            # median of distance
+
+            # sqrt(median/0.9133)
 
 
 

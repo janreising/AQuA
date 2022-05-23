@@ -20,19 +20,12 @@ function [dat,dF,arLst,lmLoc,opts,dActVox] = actTop(dat,opts,evtSpatialMask,ff)
     end
     
     % noise for raw data
-    stdMap = zeros(H, W);
-    s1 = dat(:,:, 2:end);
-    s2 = dat(:,:, end-1);
-    
-    parfor x = 1:H
-        
-        std_slic = stdMap(x,:);        
+    % noise for raw data
+    for x = 1:H
         for y = 1:W
-            xx = (s1(x,y) - s2(x, y)).^2;
-            std_slic(y) = sqrt(median(xx,3)/0.9133);
+            xx = (dat(x,y,2:end)-dat(x,y,1:end-1)).^2;
+            stdMap(x,y) = sqrt(median(xx,3)/0.9133);
         end
-        
-        stdMap(x,:) = std_slic;
     end
 %     stdMap = sqrt(median(xx,3)/0.9133);
     stdMapGauBef = double(imgaussfilt(stdMap));
