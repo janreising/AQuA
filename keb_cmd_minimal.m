@@ -1,6 +1,15 @@
+%% setup
+% -- preset 1: in vivo. 2: ex vivo. 3: GluSnFR
 startup;  % initialize
 load('random_Seed');
 rng(s);
+
+%preset = 2;
+%file = "/media/janrei1/LaCie SSD/delete/slice6/2-40X-loc1.short.zip.h5";
+%file = "/media/carmichael/1TB/delete/1-40X-loc1.zip.h5"
+%file = "E:\delete\1-40X-loc1.zip.h5"
+%file = "E:\delete\test.tiff"
+%indices = [1 500]
 
 %% save path
 [folder, name, ext] = fileparts(file);
@@ -24,13 +33,14 @@ end
 %% options
 %opts = util.parseParam(preset,1);
 
+
 opts = {};
 opts.minSize = 50;  % minimum size % 50 % orig 10
 opts.smoXY = 1; % spatial smoothing level % 0.5 % orig 0.1
 opts.thrARScl = 3; % active voxel threshold % 1.5
 
-opts.thrTWScl = 10; % temporal cut threshold % 1.5
-opts.thrExtZ = 3; % Seed growing threshold %1.5
+opts.thrTWScl = 0; % temporal cut threshold % 1.5
+opts.thrExtZ = 0; % Seed growing threshold %1.5
 
 opts.cDelay = 1; % Slowest propagation
 opts.cRise = 1; % rising phase uncertainty
@@ -81,32 +91,11 @@ opts.skipSteps = 0; % Skip step2 and 3
 %% detection
 [dat,dF,arLst,lmLoc,opts,dL] = burst.actTop(datOrg,opts);  % foreground and seed detection
 
-if opts.skipSteps>0
+% this steps uses thrTWScl & thrExtZ; filtering out a substantial portion
+% of possible events (based on GUI output)
+[svLst,~,riseX] = burst.spTop(dat,dF,lmLoc,[],opts);  % super voxel detection
 
-    svLst = arLst;
-    riseX = [];
-
-    evtLst = svLst;
-    seLst = evtLst;
-    datR = 255*ones(size(dat));
-    riseLst = cell(0);
-    H = opts.sz(1);
-    W = opts.sz(2);
-    for i = 1:numel(evtLst)
-        rr = [];
-        rr.dlyMap = zeros(H,W);
-        rr.rgh = 1:H;
-        rr.rgw = 1:W;
-        riseLst{i} = rr;
-    end
-
-else
-    %% -----> should be skipped
-    [svLst,~,riseX] = burst.spTop(dat,dF,lmLoc,[],opts);  % super voxel detection
-    [riseLst,datR,evtLst,seLst] = burst.evtTop(dat,dF,svLst,riseX,opts);  % events
-    %% <-----
-end
-
+[riseLst,datR,evtLst,seLst] = burst.evtTop(dat,dF,svLst,riseX,opts);  % events
 [ftsLst,dffMat] = fea.getFeatureQuick(dat,evtLst,opts);
 
 % fitler by significance level
@@ -134,18 +123,6 @@ end
 [ftsLstE,dffMatE,dMatE] = fea.getFeaturesTop(datOrg,evtLstE,opts);
 ftsLstE = fea.getFeaturesPropTop(dat,datRE,evtLstE,ftsLstE,opts);
 
-%{
-% update network features
-sz = size(datOrg);
-evtx1 = evtLstE;
-ftsLstE.networkAll = [];
-ftsLstE.network = [];
-try
-    ftsLstE.networkAll = fea.getEvtNetworkFeatures(evtLstE,sz);  % all filtered events
-    ftsLstE.network = fea.getEvtNetworkFeatures(evtx1,sz);  % events inside cells only
-catch
-end
-%}
 
 %% export to h5
 if exist(h5_path, 'file') == 2
@@ -168,5 +145,6 @@ save_to_h5(h5_path, dMatE, '/res/dMat');  % ? weird dimensions
 save_to_h5(h5_path, riseLstE, '/res/rise');
 save_to_h5(h5_path, datRE, '/res/datR'); % ? weird dimensions
 toc;
+
 
 fprintf("\nProcessing finished.");
