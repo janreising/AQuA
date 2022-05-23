@@ -25,9 +25,9 @@ end
 %opts = util.parseParam(preset,1);
 
 opts = {};
-opts.minSize = 50;  % minimum size % 50 % orig 10
+opts.minSize = 10;  % minimum size % 50 % orig 10
 opts.smoXY = 1; % spatial smoothing level % 0.5 % orig 0.1
-opts.thrARScl = 3; % active voxel threshold % 1.5
+opts.thrARScl = 1; % active voxel threshold % 1.5
 
 opts.thrTWScl = 10; % temporal cut threshold % 1.5
 opts.thrExtZ = 3; % Seed growing threshold %1.5
@@ -67,14 +67,14 @@ opts.propthrmin = 0.2; % Propagation threshold minimum
 opts.propthrstep = 0.1; % Propagation threshold step
 opts.propthrmax = 0.8; % Propagation threshold maximum
 
-opts.frameRate = 0.125; % Frame rate
+opts.frameRate = 0.04; % Frame rate
 opts.spatialRes = 0.55; % Spatial resolution
 opts.varEst = 0.02; % Estimated noise variance
 opts.fgFluo = 0; % Foreground threshold
 opts.bgFluo = 0; % Background threshold
 opts.northx = 0; % X cooridante for north vector
 opts.northy = 1; % Y cooridante for north vector
-opts.skipSteps = 0; % Skip step2 and 3
+opts.skipSteps = 1; % Skip step2 and 3
 
 [datOrg,opts] = burst.prep1(p0,f0,[],opts,[], indices);  % read data
 
