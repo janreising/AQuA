@@ -27,7 +27,7 @@ end
 opts = {};
 opts.minSize = 10;  % minimum size % 50 % orig 10
 opts.smoXY = 1; % spatial smoothing level % 0.5 % orig 0.1
-opts.thrARScl = 1; % active voxel threshold % 1.5
+opts.thrARScl = 3; % active voxel threshold % 1.5
 
 opts.thrTWScl = 10; % temporal cut threshold % 1.5
 opts.thrExtZ = 3; % Seed growing threshold %1.5
