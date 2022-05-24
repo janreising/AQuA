@@ -45,8 +45,8 @@ class ActTop():
 
     def run(self):
 
-        data = self.load_data(self.file_path, args.location, in_memory=args.inMemory)
-        self.func_actTop(data, in_memory=args.inMemory)
+        raw, dff = self.load_data(self.file_path, args.raw_location, args.df_location, in_memory=args.inMemory)
+        self.func_actTop(raw, dff, in_memory=args.inMemory)
 
         if self.file is not None:
             self.file.close()
@@ -62,64 +62,65 @@ class ActTop():
 
         return vlevel_print
 
-    def load_data(self, file_path, location, in_memory=True):
+    def load_data(self, file_path, raw_location, df_location, in_memory=True):
+
+        # TODO one should be on cnmfe / one should be on dF
 
         file = h5.File(file_path, "r")
         self.file = file
 
-        assert location in file, f"unable to find dataset {location} in {file_path}"
+        for loc in [raw_location, df_location]:
+            assert loc in file, f"unable to find dataset {loc} in {file_path}"
 
-        data = file[location]
-        Z, X, Y = data.shape
-        cz, cx, cy = data.chunks
-
-        vprint(f"dim: {Z}x{X}x{Y}", 2)
-        vprint(f"chunks: {cz}x{cx}x{cy}", 2)
-
-        # load into memory if required
-        data = data[:] if in_memory else data
+        if in_memory:
+            raw = file[raw_location][:]
+            dff = file[df_location][:]
+        else:
+            raw = file[raw_location]
+            dff = file[df_location]
 
         if in_memory:
             file.close()
 
-        return data
+        return raw, dff
 
-    def func_actTop(self, data, foreground_threshold=0, in_memory=True,
+    def func_actTop(self, raw, dff, foreground_threshold=0, in_memory=True,
                         noise_estimation_method = "original"):
 
         assert noise_estimation_method in ["original"]
 
-        Z, X, Y = data.shape
+        Z, X, Y = raw.shape
 
-        #> reserve memory
+        # > reserve memory
         mean_project = np.zeros((X, Y))  # reserve memory for mean projection
         var_project = np.zeros((X, Y))  # reserve memory for variance projection
         noise_map = np.zeros((X, Y))  # reserve memory for noise map
 
-        #> Calculate mean projection
+        # > Calculate mean projection
         if noise_estimation_method == "original":
-            reference_frame = data[-1, :, :]
+            reference_frame = raw[-1, :, :]
 
         vprint("calculating projections ...", 1)
         if in_memory:
-            mean_project[:] = np.mean(data, 0)
-            var_project[:] = np.var(data, 0)
-            noise_map[:] = self.calculate_noise(data)
+            mean_project[:] = np.mean(raw, 0)
+            var_project[:] = np.var(raw, 0)
+            noise_map[:] = self.calculate_noise(raw)
         else:
             # TODO PARALLEL
 
-            cz, cx, cy = data.chunks
+            cz, cx, cy = raw.chunks
 
             chunk = np.zeros((Z, cx, cy))
             # temp_chunk = np.zeros((Z-1, cx, cy))
             # temp_img = np.zeros((cx, cy))
+
             for ix in np.arange(0, X, cx):
                 for iy in np.arange(0, Y, cy):
 
                     max_x = min(X-ix, cx)  # at most load till X border of image
                     max_y = min(Y-iy, cy)  # at most load till Y border of image
 
-                    chunk[:, 0:max_x, 0:max_y] = data[:, ix:ix+max_x, iy:iy+max_y]  # load chunk
+                    chunk[:, 0:max_x, 0:max_y] = raw[:, ix:ix+max_x, iy:iy+max_y]  # load chunk
 
                     mean_project[ix:ix+max_x, iy:iy+max_y] = np.mean(chunk, 0)
                     var_project[ix:ix+max_x, iy:iy+max_y] = np.var(chunk, 0)
@@ -129,25 +130,26 @@ class ActTop():
                         ix=ix, iy=iy, max_x=max_x, max_y=max_y
                     )
 
-        #> Create masks
+        # > Create masks
         msk000 = var_project > 1e-8  # non-zero variance # TODO better variable name
-
-        # TODO section about evtSpatialMask ignored
-        # evtSpatialMask = evtSpatialMask.*msk000;
-        # evtSpatialMask = evtSpatialMask.*msk000 if evtSpatialMask is not None else msk000
 
         msk_thrSignal = mean_project > foreground_threshold
         noiseEstMask = np.multiply(msk000, msk_thrSignal)   # TODO this might be absolutely useless for us
 
-        #> noise level
+        # > noise level
         vprint("calculating noise ...", 1)
         sigma = 0.5
-        noiseMap_gauss_before = ndimage.gaussian_filter(noise_map,
-                            sigma=sigma, truncate=np.ceil(2*sigma)/sigma, mode="wrap")
-        noiseMap_gauss_before[noiseEstMask==0] = None
+        noise_map_gauss_before = ndimage.gaussian_filter(noise_map, sigma=sigma,
+                                                         truncate=np.ceil(2*sigma)/sigma, mode="wrap")
+        noise_map_gauss_before[noiseEstMask == 0] = None
 
-        #> smooth data
-        #TODO SMOOTH --> IO/memory intensive; possible to do without reloading and keeping copy in RAM?
+        # > smooth data
+        # TODO SMOOTH --> IO/memory intensive; possible to do without reloading and keeping copy in RAM?
+
+    def arSimPrep(self, msk000):
+
+
+
 
     @staticmethod
     def calculate_noise(data, reference_frame, method="original",
@@ -200,7 +202,8 @@ if __name__ == "__main__":
     parser.add_argument("--inMemory", "--mem", action='store_true')
     parser.add_argument("-v", "--verbose", type=int, default=0)
 
-    parser.add_argument("-l", "--location", type=str, default="data/")
+    parser.add_argument("--rl", "--raw_location", type=str, default="cnmfe/ast")
+    parser.add_argument("--dl", "--df_location", type=str, default="dff/ast")
 
     parser.add_argument("--frameRate", type=float, default=1.0, help="frame rate images/s")
     parser.add_argument("--spatialRes", type=float, default=0.5, help="spatial resolution µm/px")
