@@ -20,7 +20,6 @@ function [dat,dF,arLst,lmLoc,opts,dActVox] = actTop(dat,opts,evtSpatialMask,ff)
     end
     
     % noise for raw data
-    % noise for raw data
     for x = 1:H
         for y = 1:W
             xx = (dat(x,y,2:end)-dat(x,y,1:end-1)).^2;
