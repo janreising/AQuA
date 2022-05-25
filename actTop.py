@@ -4,6 +4,9 @@ import h5py as h5
 import numpy as np
 import sys
 import scipy.ndimage as ndimage
+from scipy.stats import zscore
+from skimage import measure
+
 
 class ActTop():
 
@@ -146,34 +149,6 @@ class ActTop():
         # > smooth data
         # TODO SMOOTH --> IO/memory intensive; possible to do without reloading and keeping copy in RAM?
 
-    def arSimPrep(self, msk000):
-
-
-
-
-    @staticmethod
-    def calculate_noise(data, reference_frame, method="original",
-                            chunked=False, ix=None, iy=None, max_x=None, max_y=None):
-
-        # TODO pre-defined variables worth it? --> see after return
-
-        method_options = ["original"]
-        assert method in method_options, "method is unknown; options: " + method_options
-
-        if not chunked:
-            #> noise estimate original --> similar to standard error!?
-            #TODO why exclude the first frame
-            dist_squared = np.power(np.subtract(data[1:, :, :], reference_frame),2)
-
-        else:
-            dist_squared = np.power(
-                    np.subtract(data[1:, 0:max_x, 0:max_y], reference_frame[ix:ix+max_x, iy:iy+max_y]),
-                2)  # dim: cz, cx, cy
-
-        # TODO why 0.9133
-        dist_squared_median = np.median(dist_squared, 0) / 0.9133  # dim: cx, cy
-
-        return np.power(dist_squared_median, 0.5)
 
         """
         
@@ -192,8 +167,156 @@ class ActTop():
         
         """
 
+
+# def calculate_noise(data, reference_frame, method="original",
+#                         chunked=False, ix=None, iy=None, max_x=None, max_y=None):
+#
+#     # TODO pre-defined variables worth it? --> see after return
+#
+#     method_options = ["original"]
+#     assert method in method_options, "method is unknown; options: " + method_options
+#
+#     if not chunked:
+#         #> noise estimate original --> similar to standard error!?
+#         #TODO why exclude the first frame
+#         dist_squared = np.power(np.subtract(data[1:, :, :], reference_frame), 2)
+#
+#     else:
+#         dist_squared = np.power(
+#                 np.subtract(data[1:, 0:max_x, 0:max_y], reference_frame[ix:ix+max_x, iy:iy+max_y]),
+#             2)  # dim: cz, cx, cy
+#
+#     # TODO why 0.9133
+#     dist_squared_median = np.median(dist_squared, 0) / 0.9133  # dim: cx, cy
+#
+#     return np.power(dist_squared_median, 0.5)
+
+def calc_noise(data, mskSig=None):
+
+    xx = np.power(data[1:, :, :] - data[:-1, :, :], 2)  # dim: Z, X, Y
+    stdMap = np.sqrt(np.median(xx, 0) / 0.9133)  # X, Y
+
+    if mskSig is not None:
+        stdMap[~mskSig] = None
+
+    stdEst = np.nanmedian(stdMap)  # dim:1
+
+    return stdEst
+
+
+def arSimPrep(data, smoXY):
+
+    mskSig = np.var(data, 0) > 1e-8
+
+    dat = data.copy()  # TODO inplace possible?
+    dat = dat + np.random.randn(*dat.shape)*1e-6
+
+    # smooth data
+    if smoXY > 0:
+        for z in range(dat.shape[0]):
+            dat[z, :, :] = ndimage.gaussian_filter(dat[z, :, :], sigma=smoXY, truncate=np.ceil(2*smoXY)/smoXY, mode="wrap")
+
+    # estimate noise
+    stdEst = calc_noise(data, mskSig)
+
+    dF = getDfBlk(dat, cut=200, movAvgWin=25, stdEst=stdEst)  # TODO cut, movAvgWin variable
+
+    return dat, dF, stdEst
+
+
+def getARSim(data, smoMax, thrMin, minSize, evtSpatialMask=None,
+             smoCorr_location="smoCorr.h5"):
+
+    # learn noise correlation
+    T, H, W = data.shape
+    T1 = min(T, 100)
+    datZ = zscore(data[:T1, :, :], 0)
+
+    rhoX = np.mean(np.multiply(datZ[:, :-1, :], datZ[:, 1:, :]), axis=0)
+    rhoY = np.mean(np.multiply(datZ[:, :, :-1], datZ[:, :, 1:]), axis=0)
+    rhoXM = np.nanmedian(rhoX)
+    rhoYM = np.nanmedian(rhoY)
+
+    with h5.File(smoCorr_location) as smoCorr:
+        cx = smoCorr['cx'][:]
+        cy = smoCorr['cy'][:]
+        sVec = smoCorr['sVec'][:]
+
+    ix = np.argmin(abs(rhoXM - cx))
+    iy = np.argmin(abs(rhoYM - cy))
+    smo0 = sVec[max(ix, iy)][0]
+
+    dSim = np.random.randn(200, H, W) * 0.2
+    sigma = smo0
+    dSim = ndimage.gaussian_filter(dSim, sigma=sigma,  # TODO supposed to be 2D, not 3D
+                                        truncate=np.ceil(2*sigma)/sigma, mode="wrap")
+
+    rto = data.shape[0] / dSim.shape[0]
+
+    # > simulation
+    smoVec = [smoMax]  # TODO looks like this should be a vector!?!?!?!
+    thrVec = np.arange(thrMin+3, thrMin-1, -1)
+
+    dARAll = np.zeros((H, W))
+    for i, smoI in enumerate(smoVec):
+
+        print(f'Smo {i} ==== \n')
+        # opts.smoXY = smoI ## ???
+
+        _, dFSim, sSim = arSimPrep(dSim, smoI)
+        _, dFReal, sReal = arSimPrep(data, smoI)
+
+        for j, thrJ in enumerate(thrVec):
+
+            dAR = np.zeros((H, W))
+            print(f'Thr {j} \n')
+
+            # null
+            tmpSim = dFSim > thrJ*sSim
+            szFreqNull = np.zeros((1, H*W))
+            for cz in range(dSim.shape[0]):
+                tmp00 = np.multiply(tmpSim[cz, :, :], evtSpatialMask)
+                cc =
+
+
+def moving_average(x, w):
+    return np.convolve(x, np.ones(w), 'same') / w  # TODO maybe valid better?
+
+
+def getDfBlk(data, cut, movAvgWin, stdEst=None, spatialMask=None):
+
+    # cut: frames per segment
+
+    if stdEst is None:
+        stdEst = calc_noise(data, spatialMask)
+
+    T, H, W = data.shape
+
+    dF = np.zeros(data.shape, dtype=np.single)
+
+    # > calculate bias
+    num_trials = 10000
+    xx = np.random.randn(num_trials, cut)*stdEst
+
+    xxMA = np.zeros(xx.shape)
+    for n in range(num_trials):
+        xxMA[n, :] = moving_average(xx[n, :], movAvgWin)
+
+    xxMin = np.min(xxMA, axis=1)
+    xBias = np.nanmean(xxMin)
+
+    # > calculate dF
+    for ix in range(H):
+        for iy in range(W):
+            dF[:, ix, iy] = moving_average(data[:, ix, iy], movAvgWin) - xBias
+
+    return dF
+
+
+
 if __name__ == "__main__":
 
+    """
     ## arguments
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input", type=str, default=None)
@@ -217,4 +340,31 @@ if __name__ == "__main__":
 
     # Create AqUA object
     c = ActTop(args)
-    c.run()
+    # c.run()
+    """
+
+    import h5py as h
+    file = "E:/data/22A5x4/22A5x4-1.zip.h5"
+
+    with h.File(file, "r") as f:
+        data = f["cnmfe/ast"][:]
+
+    data = data.astype(np.single)
+
+    arSimPrep(data, 1)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
