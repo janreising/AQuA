@@ -6,6 +6,7 @@ import sys
 import scipy.ndimage as ndimage
 from scipy.stats import zscore
 from skimage import measure
+from skimage import morphology
 
 
 class ActTop():
@@ -217,12 +218,11 @@ def arSimPrep(data, smoXY):
             dat[z, :, :] = ndimage.gaussian_filter(dat[z, :, :], sigma=smoXY, truncate=np.ceil(2*smoXY)/smoXY, mode="wrap")
 
     # estimate noise
-    stdEst = calc_noise(data, mskSig)
+    stdEst = calc_noise(dat, mskSig)
 
     dF = getDfBlk(dat, cut=200, movAvgWin=25, stdEst=stdEst)  # TODO cut, movAvgWin variable
 
     return dat, dF, stdEst
-
 
 def getARSim(data, smoMax, thrMin, minSize, evtSpatialMask=None,
              smoCorr_location="smoCorr.h5"):
@@ -257,10 +257,11 @@ def getARSim(data, smoMax, thrMin, minSize, evtSpatialMask=None,
     smoVec = [smoMax]  # TODO looks like this should be a vector!?!?!?!
     thrVec = np.arange(thrMin+3, thrMin-1, -1)
 
+    t0 = time.time()
     dARAll = np.zeros((H, W))
     for i, smoI in enumerate(smoVec):
 
-        print(f'Smo {i} ==== \n')
+        print("Smo {} [{}] ==== - {:.2f}\n".format(i, smoI, (time.time()-t0)/60))
         # opts.smoXY = smoI ## ???
 
         _, dFSim, sSim = arSimPrep(dSim, smoI)
@@ -268,19 +269,86 @@ def getARSim(data, smoMax, thrMin, minSize, evtSpatialMask=None,
 
         for j, thrJ in enumerate(thrVec):
 
-            dAR = np.zeros((H, W))
-            print(f'Thr {j} \n')
+            dAR = np.zeros((T, H, W))
+            print("Thr{}:{} [> {:.2f}| >{:.2f}]  - {:.2f}\n".format(j, thrJ, thrJ*sSim, thrJ*sReal, (time.time()-t0)/60))
 
-            # null
+            # > null
+            print("\t calculating null ... - {:.2f}".format((time.time()-t0)/60))
             tmpSim = dFSim > thrJ*sSim
-            szFreqNull = np.zeros((1, H*W))
-            for cz in range(dSim.shape[0]):
-                tmp00 = np.multiply(tmpSim[cz, :, :], evtSpatialMask)
-                cc =
+            szFreqNull = np.zeros((H*W))
+            for cz in range(T):
+                # tmp00 = np.multiply(tmpReal[cz, :, :], evtSpatialMask)
+                tmp00 = tmpSim[cz, :, :]
 
+                # identify distinct areas
+                labels = measure.label(tmp00)  # dim X.Y, int
+                areas = [prop.area for prop in measure.regionprops(labels)]
 
-def moving_average(x, w):
-    return np.convolve(x, np.ones(w), 'same') / w  # TODO maybe valid better?
+                for area in areas:
+                    szFreqNull[area] += 1
+
+            szFreqNull = szFreqNull*rto
+
+            # > observation
+            print("\t calculating observation ... - {:.2f}".format((time.time()-t0)/60))
+            tmpReal = dFReal > thrJ*sReal
+            szFreqObs = np.zeros(H*W)  # counts frequency of object size
+            maxArea = 0  # used to speed up false positive control (see below)
+            for cz in range(T):
+                # tmp00 = np.multiply(tmpReal[cz, :, :], evtSpatialMask)
+                tmp00 = tmpReal[cz, :, :]
+
+                labels = measure.label(tmp00)  # dim X.Y, int
+                areas = [prop.area for prop in measure.regionprops(labels)]
+                maxArea = max(maxArea, max(areas))
+
+                for area in areas:
+                    szFreqObs[area] = szFreqObs[area] + 1
+
+            # > false positive control: choose higher min_size threshold if null data suggests it
+            # print("\t calculating false positives ... - {:.2f}".format((time.time()-t0)/60))
+            # suc = 0
+            # szThr = 0
+            # for s in range(maxArea+1):
+            #
+            #     fpr = np.sum(szFreqNull[s:]) / np.sum(szFreqObs[s:])
+            #
+            #     if fpr < 0.01:
+            #         suc = 1
+            #         szThr = np.ceil(s*1.2)
+            #         break
+            #
+            # szThr = max(szThr, minSize)
+            szThr = minSize
+            suc = 1
+            print("\t\t szThr: {:.2f}".format(szThr))
+
+            # > apply to data
+            print("\t applying to data ... - {:.2f}".format((time.time()-t0)/60))
+            if suc > 0:
+
+                e00 = int(np.ceil(smoI/2))
+                for cz in range(T):
+                    tmp0 = tmpReal[cz, :, :]
+                    tmp0 = morphology.remove_small_objects(tmp0, min_size=szThr)
+
+                    if e00 > 0:
+                        # erode image with square footprint
+                        tmp0 = morphology.binary_erosion(tmp0, footprint=np.ones((2, e00)))
+
+                    dAR[cz, :, :] = dAR[cz, :, :] + tmp0
+
+            dARAll = dARAll + dAR
+
+    dARAll = dARAll > 0
+    arLst = measure.label(dARAll)
+    arLst_properties = measure.regionprops(arLst)
+
+    return dARAll, arLst, arLst_properties
+
+def moving_average(a, w):
+    y = ndimage.filters.uniform_filter1d(a, size=w)
+    return y
 
 
 def getDfBlk(data, cut, movAvgWin, stdEst=None, spatialMask=None):
@@ -308,11 +376,25 @@ def getDfBlk(data, cut, movAvgWin, stdEst=None, spatialMask=None):
     # > calculate dF
     for ix in range(H):
         for iy in range(W):
-            dF[:, ix, iy] = moving_average(data[:, ix, iy], movAvgWin) - xBias
+            dF[:, ix, iy] = data[:, ix, iy] - min(moving_average(data[:, ix, iy], movAvgWin)) - xBias
 
     return dF
 
 
+import matplotlib.pyplot as plt
+def show(A):
+
+    if type(A) == list:
+
+        fig, axx = plt.subplots(1, len(A))
+
+        for ax, a in list(zip(axx, A)):
+            ax.imshow(a)
+
+    else:
+        plt.imshow(A)
+
+    plt.show()
 
 if __name__ == "__main__":
 
@@ -344,14 +426,20 @@ if __name__ == "__main__":
     """
 
     import h5py as h
+    import numpy as np
     file = "E:/data/22A5x4/22A5x4-1.zip.h5"
 
     with h.File(file, "r") as f:
-        data = f["cnmfe/ast"][:]
+        data = f["cnmfe/neu"][:]
 
     data = data.astype(np.single)
 
-    arSimPrep(data, 1)
+
+
+
+
+
+
 
 
 
