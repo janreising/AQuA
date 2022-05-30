@@ -3,11 +3,15 @@ import os
 import h5py as h5
 import numpy as np
 import sys
+import time
 import scipy.ndimage as ndimage
 from scipy.stats import zscore
 from skimage import measure
 from skimage import morphology
-
+import multiprocessing as mp
+from itertools import product
+from multiprocessing import shared_memory
+from pathos.multiprocessing import ProcessingPool as Pool
 
 class ActTop():
 
@@ -276,7 +280,7 @@ def getARSim(data, smoMax, thrMin, minSize, evtSpatialMask=None,
             print("\t calculating null ... - {:.2f}".format((time.time()-t0)/60))
             tmpSim = dFSim > thrJ*sSim
             szFreqNull = np.zeros((H*W))
-            for cz in range(T):
+            for cz in range(T):     # TODO shouldn't be range T but 200!?
                 # tmp00 = np.multiply(tmpReal[cz, :, :], evtSpatialMask)
                 tmp00 = tmpSim[cz, :, :]
 
@@ -346,9 +350,136 @@ def getARSim(data, smoMax, thrMin, minSize, evtSpatialMask=None,
 
     return dARAll, arLst, arLst_properties
 
+
+def getAr(data, thrARScl, varEst, minSize, evtSpatialMask=None):
+
+    Z, X, Y = data.shape
+
+    dActVoxDi = np.zeros(data.shape, dtype=np.bool8)
+    for z in range(Z):
+
+        tmp = data[z, :, :] > thrARScl * np.sqrt(varEst)
+        tmp = morphology.remove_small_objects(tmp, min_size=minSize, connectivity=4)
+
+        if evtSpatialMask is not None:
+            tmp = np.multiply(tmp, evtSpatialMask)
+
+        dActVoxDi[z, :, :] = tmp
+
+    arLst = measure.label(dActVoxDi)
+    arLst_properties = measure.regionprops(arLst)
+
+    return arLst, arLst_properties
+
+def temp(path, x_range, y_range, thrARScl, varEst, minSize,
+         buffer_name, buffer_dtype, buffer_shape,
+         location="dff/neu", evtSpatialMask=None):
+
+    with h5.File(path, "r") as f:
+        data = f[location][:, x_range[0]:x_range[1], y_range[0]:y_range[1]]
+        Z, X, Y = data.shape
+
+    buffer = mp.shared_memory.SharedMemory(name=buffer_name)
+    shared_memory = np.ndarray(buffer_shape, dtype=buffer_dtype, buffer=buffer.buf)
+
+    for z in range(Z):
+
+        tmp = data[z, :, :] > thrARScl * np.sqrt(varEst)
+        tmp = morphology.remove_small_objects(tmp, min_size=minSize, connectivity=4)
+
+        if evtSpatialMask is not None:
+            tmp = np.multiply(tmp, evtSpatialMask)
+
+        shared_memory[z, x_range[0]:x_range[1], y_range[0]:y_range[1]] = tmp
+
+    # arLst = measure.label(dActVoxDi)
+    # arLst_properties = measure.regionprops(arLst)
+
+    print("DONE: ", x_range, y_range)
+
+
+def getAr_h5(path, thrARScl, varEst, minSize, location="dff/neu", evtSpatialMask=None,
+             x_range=None, y_range=None):
+
+    # get data dimensions
+    with h5.File(path, "r") as f:
+        data = f[location]
+        Z, X, Y = data.shape
+        cz, cx, cy = data.chunks
+
+    # quality check parameters
+    if x_range is None:
+        x0 = 0
+    else:
+        assert x_range[0] % cx == 0, "x range start should be multiple of chunk length {}: {}".format(cx, x_range / cx)
+        x0, X = x_range
+
+    if y_range is None:
+        y0 = 0
+    else:
+        assert y_range[0] % cy == 0, "y range start should be multiple of chunk length {}: {}".format(cy, y_range / cy)
+        y0, Y = y_range
+
+    # created shared output array
+    binary_map = np.zeros((Z, X, Y), dtype=np.bool_)
+    binary_map_shared = shared_memory.SharedMemory(create=True, size=binary_map.nbytes)
+
+    # iterate over chunks
+    with mp.Pool(mp.cpu_count()) as pool:
+
+        for chunk_x, chunk_y in list(product(np.arange(x0, X, cx), np.arange(y0, Y, cy))):
+            pool.apply(temp,
+                       args=(path, [chunk_x, chunk_x+cx], [chunk_y, chunk_y+cy],
+                             thrARScl, varEst, minSize,
+                             binary_map_shared.name, binary_map.dtype, binary_map.shape,
+                             location, evtSpatialMask)
+                       )
+
+    # close shared array
+    binary_map[:] = np.ndarray(binary_map.shape, dtype=binary_map.dtype, buffer=binary_map_shared.buf)
+    binary_map_shared.close()
+    binary_map_shared.unlink()
+
+    # get labels
+    arLst = measure.label(binary_map)
+    # arLst_properties = measure.regionprops(arLst)
+
+    return arLst#, arLst_properties
+
 def moving_average(a, w):
     y = ndimage.filters.uniform_filter1d(a, size=w)
     return y
+
+
+def moving_average_xy(a, w):
+
+    _, X, Y = a.shape
+
+    res = np.zeros(a.shape)
+    for x, y in list(zip(range(X), range(Y))):
+
+        res[:, x, y] = ndimage.filters.uniform_filter1d(a[:, x, y], size=w)
+
+    return res
+
+
+def moving_average_h5(path, loc, output, x, y, w,
+                      shmem_shape, shmem_dtype):
+
+    with h5.File(path, "r") as file:
+
+        data = file[loc]
+        cz, cx, cy = data.chunks
+
+        chunk = data[:, x:x+cx, y:y+cy]
+        Z, X, Y = chunk.shape
+
+    buffer = mp.shared_memory.SharedMemory(name=output)
+    dF = np.ndarray(shmem_shape, dtype=shmem_dtype, buffer=buffer.buf)
+
+    for xi in range(X):
+        for yi in range(Y):
+            dF[:, x+xi, y+yi] = ndimage.filters.uniform_filter1d(chunk[:, xi, yi], size=w)
 
 
 def getDfBlk(data, cut, movAvgWin, stdEst=None, spatialMask=None):
@@ -381,6 +512,64 @@ def getDfBlk(data, cut, movAvgWin, stdEst=None, spatialMask=None):
     return dF
 
 
+def getDfBlk_faster(path, loc, cut, movAvgWin, x_max=None, y_max=None, stdEst=None, spatialMask=None,
+                    multiprocessing=True):
+
+    # cut: frames per segment
+
+    if stdEst is None:
+        stdEst = calc_noise(data, spatialMask)
+
+    with h5.File(path, "r") as file:
+        data = file[loc]
+        Z, X, Y = data.shape
+        X = min(X, x_max)
+        Y = min(Y, y_max)
+        cz, cx, cy = data.chunks
+
+    dF = np.zeros([Z, X, Y], dtype=np.single)  # TODO maybe double?
+
+    # > calculate bias
+    num_trials = 10000
+    xx = np.random.randn(num_trials, cut)*stdEst
+
+    xxMA = np.zeros(xx.shape)
+    for n in range(num_trials):
+        xxMA[n, :] = moving_average(xx[n, :], movAvgWin)
+
+    xxMin = np.min(xxMA, axis=1)
+    xBias = np.nanmean(xxMin)
+
+    # > calculate dF
+    if multiprocessing:
+
+        # def subtract_baseline(trace0, movAvgWin, xBias):
+        #     trace0 - min(moving_average(trace0, movAvgWin)) - xBias
+
+        chunks = list(product(np.arange(0, X, cx), np.arange(0, Y, cy)))
+        print("chunks {}: {}".format(len(chunks), chunks))
+        dF_shared = shared_memory.SharedMemory(create=True, size=dF.nbytes)
+        print("Shared Name: ", dF_shared.name)
+
+        with mp.Pool(mp.cpu_count()) as pool:
+
+            for x, y in chunks:
+                pool.apply(moving_average_h5, args=(path, loc, dF_shared.name, x, y, movAvgWin,
+                                                    dF.shape, dF.dtype))
+
+        dF[:] = dF_shared[:]
+
+        dF_shared.close()
+        dF_shared.unlink()
+
+    else:
+        for ix in range(X):
+            for iy in range(Y):
+                dF[:, ix, iy] = data[:, ix, iy] - min(moving_average(data[:, ix, iy], movAvgWin)) - xBias
+
+    return dF
+
+
 import matplotlib.pyplot as plt
 def show(A):
 
@@ -395,6 +584,7 @@ def show(A):
         plt.imshow(A)
 
     plt.show()
+
 
 if __name__ == "__main__":
 
@@ -427,12 +617,85 @@ if __name__ == "__main__":
 
     import h5py as h
     import numpy as np
-    file = "E:/data/22A5x4/22A5x4-1.zip.h5"
+    # file = "E:/data/22A5x4/22A5x4-2.zip.h5"
+    file = "C:/Users/janrei/Desktop/22A5x4-2.zip.h5"
 
+    cut = 200
+    movWin = 20
+
+    run_original = True
+
+    """
+    ## SHORT FILE
+    print("-- short file --")
     with h.File(file, "r") as f:
-        data = f["cnmfe/neu"][:]
+        data = f["cnmfe/neu"][0:200, 0:200, 0:200]
+        # data = data.astype(np.single)
+        print("shape: ", data.shape)
 
-    data = data.astype(np.single)
+    t0 = time.time()
+    r0 = getDfBlk(data, cut, movWin)
+    t1 = time.time()
+
+    print("Original ...\t{:.2f}s".format(t1 - t0))
+
+    r1 = getDfBlk_faster(data, cut, movWin)
+    t2 = time.time()
+    print("Optimized ...\t{:.2f}s".format(t2 - t1))
+
+    print("\nDIFF: \t{:.3f}s [{:.1f}%]".format((t1 - t0) - (t2 - t1), (t2 - t1) / (t1 - t0) * 100))
+
+    same = np.allclose(r0, r1, atol=0.1)
+    print("Results equivalent: {}".format(same))
+    
+
+    ## LONG FILE
+    print("\n\n-- long file --")
+
+    X_max = 300
+    Y_max = 300
+
+    t0 = time.time()
+
+    if run_original:
+        with h.File(file, "r") as f:
+            data = f["cnmfe/neu"][:, 0:X_max, 0:Y_max]
+            # data = data.astype(np.single)
+            print("shape: ", data.shape)
+        r0 = getDfBlk(data, cut, movWin, stdEst=0.1)
+    else:
+        time.sleep(1)
+        r0 = None
+
+    t1 = time.time()
+
+    print("Original ...\t{:.2f}s".format(t1-t0))
+
+    r1 = getDfBlk_faster(file, "cnmfe/neu", cut, movWin, x_max=X_max, y_max=Y_max, stdEst=0.1)
+    t2 = time.time()
+    print("Optimized ...\t{:.2f}s".format(t2-t1))
+
+    print("\nDIFF: \t{:.3f}s [{:.1f}%]".format((t1-t0) - (t2-t1), (t2-t1)/(t1-t0)*100))
+
+    same = np.allclose(r0, r1, atol=0.1)
+    print("Results equivalent: {}".format(same))
+    
+    """
+
+    # with h5.File(file, "r") as f:
+    #     data = f["dff/neu"][:cut, :, :]
+
+    # noise = calc_noise(data)
+    # print("Noise: ", noise)
+
+    # with h5.File(file, "r") as f:
+    #     data = f["dff/neu"][:cut, :, :]
+
+    getAr_h5(file, 3, 0.1, 10,
+            location="dff/neu", evtSpatialMask=None,
+            x_range=None, y_range=None)
+
+    # print(len(arLst))
 
 
 
