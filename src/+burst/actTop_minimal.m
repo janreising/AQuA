@@ -1,20 +1,20 @@
 function [dat,dF,arLst,lmLoc,opts,dActVox] = actTop(dat,opts,evtSpatialMask,ff)
 
-    [H,W,T] = size(dat);
-    msk000 = var(dat,0,3)>1e-8;
+    [H,W,T] = size(data);
+    msk000 = var(data,0,3)>1e-8;
     evtSpatialMask = msk000;
 
-    % smooth the data
+    % noise and threshold, get active voxels
+    %[arLst,dActVox] = burst.getARSim(datOrg,opts,evtSpatialMask,opts.smoXY,opts.thrARScl,opts.minSize);
+    [arLst,dActVox] = burst.getAr(data,opts,evtSpatialMask);
+
+    % seeds
     if opts.smoXY>0
         for tt=1:size(dat,3)
-            dat(:,:,tt) = imgaussfilt(dat(:,:,tt),opts.smoXY);
+            dat(:,:,tt) = imgaussfilt(dat(:,:,tt),opts.smoXY);  % smooth the data
         end
     end
 
-    % noise and threshold, get active voxels
-    [arLst,dActVox] = burst.getARSim(datOrg,opts,evtSpatialMask,opts.smoXY,opts.thrARScl,opts.minSize);
-
-    % seeds
     fsz = [1 1 0.5];  % smoothing for seed detection
     lmLoc = burst.getLmAll(dat,arLst,dActVox,fsz);
 
@@ -36,7 +36,7 @@ function [arLst,dARAll] = getARSim(dat,opts,evtSpatialMask,smoMax,thrMin,minSize
     [~,iy] = min(abs(rhoyM-rr.cy));
     smo0 = rr.sVec(max(ix,iy));
 
-    dSim = randn(opts.sz(1),opts.sz(2),200)*0.2;
+    dSim = randn(H, W,200)*0.2;
     dSim = imgaussfilt(dSim,[smo0 smo0]);
 
     rto = size(dat,3)/size(dSim,3);
@@ -45,7 +45,7 @@ function [arLst,dARAll] = getARSim(dat,opts,evtSpatialMask,smoMax,thrMin,minSize
     smoVec = smoMax;
     thrVec = thrMin+3:-1:thrMin;
 
-    dARAll = zeros(opts.sz);
+    dARAll = zeros([H, W, T]);
     for ii=1:numel(smoVec)
         fprintf('Smo %d ==== \n',ii);
         opts.smoXY = smoVec(ii);
@@ -96,6 +96,7 @@ function [arLst,dARAll] = getARSim(dat,opts,evtSpatialMask,smoMax,thrMin,minSize
                 end
             end
             szThr = max(szThr,minSize);
+            fprintf('szThr %d ==== \n',szThr);
 
             % apply to data
             if suc>0
@@ -138,7 +139,7 @@ function [dat,dF,stdEst] = arSimPrep(dat,opts)
     stdMap(~mskSig) = nan;
     stdEst = double(nanmedian(stdMap(:)));
 
-    dF = burst.getDfBlk(dat,mskSig,opts.cut,opts.movAvgWin,stdEst);
+    dF = getDfBlk(dat,mskSig,opts.cut,opts.movAvgWin,stdEst);
 
 end
 
@@ -220,6 +221,22 @@ function dF = getDfBlk(datIn,evtSpatialMask,cut,movAvgWin,stdEst)
 end
 
 
+data = double(h5read("E:/data/22A5x4/22A5x4-1.zip.h5", "/dff/neu"));
 
+opts.smoXY=0.1;
+opts.thrARScl=3;
+opts.minSize=10;
+
+xx = (data(:,:,2:end)-data(:,:,1:end-1)).^2;
+stdMap = sqrt(median(xx,3)/0.9133);
+stdEst = double(nanmedian(stdMap(:)));
+opts.varEst=stdEst;
+
+[H, W, T] = size(data);
+cut=200;
+movAvgWin=25;
+evtSpatialMask=ones(H, W);
+dF = burst.getDfBlk(data, evtSpatialMask, cut,movAvgWin);
+save_to_h5("dF.h5", dF, "/dF");
 
 

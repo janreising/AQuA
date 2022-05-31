@@ -367,13 +367,15 @@ def getAr(data, thrARScl, varEst, minSize, evtSpatialMask=None):
         dActVoxDi[z, :, :] = tmp
 
     arLst = measure.label(dActVoxDi)
-    arLst_properties = measure.regionprops(arLst)
+    arLst_properties = measure.regionprops(arLst, intensity_image=data)  # TODO split if necessary
 
     return arLst, arLst_properties
 
 def temp(path, x_range, y_range, thrARScl, varEst, minSize,
          buffer_name, buffer_dtype, buffer_shape,
          location="dff/neu", evtSpatialMask=None):
+
+    print("temp")
 
     with h5.File(path, "r") as f:
         data = f[location][:, x_range[0]:x_range[1], y_range[0]:y_range[1]]
@@ -439,6 +441,7 @@ def getAr_h5(path, thrARScl, varEst, minSize, location="dff/neu", evtSpatialMask
     binary_map[:] = np.ndarray(binary_map.shape, dtype=binary_map.dtype, buffer=binary_map_shared.buf)
     binary_map_shared.close()
     binary_map_shared.unlink()
+    f.close()
 
     # get labels
     arLst = measure.label(binary_map)
@@ -461,6 +464,123 @@ def moving_average_xy(a, w):
         res[:, x, y] = ndimage.filters.uniform_filter1d(a[:, x, y], size=w)
 
     return res
+
+
+def getLmAll(data, arLst, arLst_properties, fsz=(1, 1, 0.5), bounding_box_extension=3):
+
+    """ Detect all local maxima in the video
+
+    :param data:
+    :param arLst:
+    :param arLst_properties:
+    :param fsz:
+    :param bounding_box_extension:
+    :return:
+    """
+
+    Z, X, Y = data.shape
+
+    # detect in active regions only
+    # lmAll = np.zeros(data.shape, dtype=np.bool_)
+    lmLoc = []  # location of local maxima
+    lmVal = []  # values of local maxima
+    for i, prop in enumerate(arLst_properties):
+
+        # pix0 = prop.coords  # absolute coordinates
+        bbox_z0, bbox_x0, bbox_y0, bbox_z1, bbox_x1, bbox_y1 = prop.bbox  # bounding box coordinates
+        # pix0_relative = pix0 - (bbox_z0, bbox_x0, bbox_y0)  # relative coordinates
+
+        # extend bounding box
+        bbox_z0 = max(bbox_z0-bounding_box_extension, 0)
+        bbox_z1 = min(bbox_z1+bounding_box_extension, Z)
+
+        bbox_x0 = max(bbox_x0 - bounding_box_extension, 0)
+        bbox_x1 = min(bbox_x1 + bounding_box_extension, X)
+
+        bbox_y0 = max(bbox_y0 - bounding_box_extension, 0)
+        bbox_y1 = min(bbox_y1 + bounding_box_extension, Y)
+
+        # get mask and image intensity
+        if bounding_box_extension < 1:
+            mskST = prop.image  # binary mask of active region
+            dInst = data[bbox_z0:bbox_z1, bbox_x0:bbox_x1, bbox_y0:bbox_y1]  # bounding box intensity
+            mskSTSeed = prop.intensity_image  # real values of region (equivalent to dInst .* mskST)
+        else:
+            mskST = arLst[bbox_z0:bbox_z1, bbox_x0:bbox_x1, bbox_y0:bbox_y1] > 0
+            dInst = data[bbox_z0:bbox_z1, bbox_x0:bbox_x1, bbox_y0:bbox_y1]
+            mskSTSeed = np.multiply(dInst, mskST)
+
+        # get local maxima
+        dInst_smooth = ndimage.gaussian_filter(dInst, sigma=fsz)
+        local_maxima = morphology.local_maxima(dInst_smooth, allow_borders=False, indices=True)
+        lm_z, lm_x, lm_y = local_maxima
+
+        # select local maxima within mask
+        for lmax in zip(lm_z, lm_x, lm_y):
+
+            if mskST[lmax] > 0:
+                lmLoc.append(lmax)
+                lmVal.append(mskSTSeed[lmax])
+
+        return lmLoc, lmVal
+
+
+def getFeaturesTop(data, evtMap, arLst_properties,
+                   frame_rate, spatial_resolution, movAvgWin,
+                   fit_option="exp1", fit_max_iter=100,
+                   use_poissoin_noise_model=True,
+                   skip_single_frame_events=True):
+
+    ## arLst eventMap
+
+    Z, X, Y = data.shape
+    if use_poissoin_noise_model:
+        data = np.sqrt(data)
+
+    # datx = data.copy()  # TODO really necessary?
+    # datx[evtMap > 0] = None  # set all detected events None
+    # datx = imputeMov(datx)
+
+    Tww = min(movAvgWin, Z/4)
+    bbm = 0
+
+    ftsLst = {}
+    ftsLst["baisc"] = []
+    ftsLst["propagation"] = []
+
+    dMat = np.zeros((len(arLst_properties), Z, 2), dtype=np.single)
+    dffMat = np.zeros((len(arLst_properties), Z, 2), dtype=np.single)
+
+    for i, evt in enumerate(arLst_properties):
+
+        pix0 = evt.coords  # absolute coordinates
+        bbox_z0, bbox_x0, bbox_y0, bbox_z1, bbox_x1, bbox_y1 = evt.bbox  # bounding box coordinates
+        pix0_relative = pix0 - (bbox_z0, bbox_x0, bbox_y0)  # relative coordinates
+
+        mskST = evt.image  # binary mask of active region
+        mskSTSeed = evt.intensity_image  # real values of region (equivalent to dInst .* mskST)
+
+        # skip if event is only one frame long
+        if skip_single_frame_events and (bbox_z0 == bbox_z1):
+            continue
+
+        xy_footprint = np.max(mskST, axis=0)
+        dInst = data[:, bbox_x0:bbox_x1, bbox_y0:bbox_y1]  # bounding box intensity
+
+        raw_curve = np.mean(dInst, axis=(1, 2), where=xy_footprint)
+
+        # TODO event_indices have to include all events detected
+
+    return ftsLst, dffMat, dMat
+
+def curvePolyDeTrend(curve, event_indices):
+
+    X = range(len(curve))
+    Y = curve
+
+
+
+
 
 
 def moving_average_h5(path, loc, output, x, y, w,
@@ -571,7 +691,7 @@ def getDfBlk_faster(path, loc, cut, movAvgWin, x_max=None, y_max=None, stdEst=No
 
 
 import matplotlib.pyplot as plt
-def show(A):
+def show(A, label=None):
 
     if type(A) == list:
 
@@ -579,6 +699,7 @@ def show(A):
 
         for ax, a in list(zip(axx, A)):
             ax.imshow(a)
+            if label is not None: ax.set_title(label)
 
     else:
         plt.imshow(A)
@@ -615,10 +736,10 @@ if __name__ == "__main__":
     # c.run()
     """
 
-    import h5py as h
+    import h5py as h5
     import numpy as np
-    # file = "E:/data/22A5x4/22A5x4-2.zip.h5"
-    file = "C:/Users/janrei/Desktop/22A5x4-2.zip.h5"
+    file = "E:/data/22A5x4/22A5x4-1.zip.h5"
+    # file = "C:/Users/janrei/Desktop/22A5x4-2.zip.h5"
 
     cut = 200
     movWin = 20
@@ -688,14 +809,32 @@ if __name__ == "__main__":
     # noise = calc_noise(data)
     # print("Noise: ", noise)
 
-    # with h5.File(file, "r") as f:
-    #     data = f["dff/neu"][:cut, :, :]
+    with h5.File(file, "r") as f:
+        data = f["dff/neu"][:]
 
-    getAr_h5(file, 3, 0.1, 10,
-            location="dff/neu", evtSpatialMask=None,
-            x_range=None, y_range=None)
+    stdEst = calc_noise(data)
+
+    arLst, arLst_properties = getAr(data, 3, stdEst, 10, evtSpatialMask=None)
+    print(len(arLst_properties))
+    show(arLst[50, :, :])
 
     # print(len(arLst))
+
+    i = 64
+    evt = arLst_properties[i]
+
+    n = 5
+    show([mskST[n, :, :], dInst[n, :, :], mskSTSeed[n, :, :], dInst_smooth[n, :, :]])
+
+    z_last = -1
+    for z, x, y in lmLoc:
+        tmp_ = mskSTSeed[z, :, :].copy() if z_last != z else tmp_
+        tmp_[x, y] = 2
+
+        show([mskSTSeed[z, :, :], tmp_], label=z)
+        # show(mskSTSeed[z, :, :])
+
+        z_last = z
 
 
 
