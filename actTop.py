@@ -12,8 +12,10 @@ import multiprocessing as mp
 from itertools import product
 from multiprocessing import shared_memory
 from pathos.multiprocessing import ProcessingPool as Pool
+from scipy.optimize import curve_fit
 
-class ActTop():
+
+class ActTop:
 
     def __init__(self, args):
 
@@ -528,7 +530,8 @@ def getLmAll(data, arLst, arLst_properties, fsz=(1, 1, 0.5), bounding_box_extens
 def getFeaturesTop(data, evtMap, arLst_properties,
                    frame_rate, spatial_resolution, movAvgWin,
                    fit_option="exp1", fit_max_iter=100,
-                   use_poissoin_noise_model=True,
+                   background_fluorescence=0,
+                   use_poissoin_noise_model=False,
                    skip_single_frame_events=True):
 
     ## arLst eventMap
@@ -537,9 +540,29 @@ def getFeaturesTop(data, evtMap, arLst_properties,
     if use_poissoin_noise_model:
         data = np.sqrt(data)
 
-    # datx = data.copy()  # TODO really necessary?
-    # datx[evtMap > 0] = None  # set all detected events None
-    # datx = imputeMov(datx)
+    # replace events with median of surrounding (impute)
+    datx = data.copy()  # TODO really necessary?
+    datx[evtMap > 0] = None  # set all detected events None
+
+    for evt in arLst_properties:
+
+        # get bounding box
+        bbox_z0, bbox_x0, bbox_y0, bbox_z1, bbox_x1, bbox_y1 = evt.bbox  # bounding box coordinates
+        dInst = data[bbox_z0:bbox_z1, bbox_x0:bbox_x1, bbox_y0:bbox_y1]  # bounding box intensity
+        mskST = evt.image  # binary mask of active region
+
+        # print(evt.solidity)
+
+        # calculate not NaN median for masks that are not 100% of the bounding box
+        if evt.extent < 1:
+            median_inv_mask = np.nanmedian(dInst[~mskST])
+        else:
+            median_inv_mask = np.min(dInst)
+
+        # replace NaN with median
+        box = datx[bbox_z0:bbox_z1, bbox_x0:bbox_x1, bbox_y0:bbox_y1]
+        box[np.isnan(box)] = median_inv_mask
+        datx[bbox_z0:bbox_z1, bbox_x0:bbox_x1, bbox_y0:bbox_y1] = box
 
     Tww = min(movAvgWin, Z/4)
     bbm = 0
@@ -553,34 +576,90 @@ def getFeaturesTop(data, evtMap, arLst_properties,
 
     for i, evt in enumerate(arLst_properties):
 
-        pix0 = evt.coords  # absolute coordinates
         bbox_z0, bbox_x0, bbox_y0, bbox_z1, bbox_x1, bbox_y1 = evt.bbox  # bounding box coordinates
-        pix0_relative = pix0 - (bbox_z0, bbox_x0, bbox_y0)  # relative coordinates
-
-        mskST = evt.image  # binary mask of active region
-        mskSTSeed = evt.intensity_image  # real values of region (equivalent to dInst .* mskST)
 
         # skip if event is only one frame long
         if skip_single_frame_events and (bbox_z0 == bbox_z1):
             continue
 
-        xy_footprint = np.max(mskST, axis=0)
-        dInst = data[:, bbox_x0:bbox_x1, bbox_y0:bbox_y1]  # bounding box intensity
+        mskST = evt.image  # binary mask of active region
+        mskSTSeed = evt.intensity_image  # real values of region (equivalent to dInst .* mskST)
+        dInst = data[:, bbox_x0:bbox_x1, bbox_y0:bbox_y1]  # bounding box intensity; full length Z
 
+        # calculate active pixels in XY
+        xy_footprint = np.max(mskST, axis=0)
+
+        # grab all frames with active pixels in the footprint
+        active_frames = np.sum(evtMap[:, bbox_x0:bbox_x1, bbox_y0:bbox_y1], axis=(1, 2), where=xy_footprint)
+        active_frames = active_frames > 0
+
+        # > dFF
         raw_curve = np.mean(dInst, axis=(1, 2), where=xy_footprint)
 
-        # TODO event_indices have to include all events detected
+        charx1 = curvePolyDeTrend(raw_curve, exclude=active_frames)
+        sigma1 = np.sqrt(np.median(np.power(charx1[1:]-charx1[:-1], 2)) / 0.9113)
+
+        charxBg1 = np.min(moving_average(charx1, Tww))
+        charxBg1 -= bbm*sigma1  # TODO bbm is set to zero!?
+        charxBg1 -= background_fluorescence
+
+        dff1 = (charx1-charxBg1) / charxBg1  # TODO this is terrible
+        sigma1dff = np.sqrt(np.median(np.power(dff1[1:]-dff1[:-1], 2)) / 0.9113)
+
+        dff1Sel = dff1[bbox_z0:bbox_z1]
+        dff1Max = np.max(dff1Sel)
+
+        # > dFF without other events
+        raw_curve_noEvents = np.mean(dInst, axis=(1, 2), where=xy_footprint)
+        raw_curve_noEvents[bbox_z0:bbox_z1] = raw_curve[bbox_z0:bbox_z1]  # splice current event back in
+
+
+        # TODO active frames is updated
+        current_event_frames = np.zeros(Z, dtype=np.bool_)
+        current_event_frames[bbox_z0:bbox_z1] = 1
+        charx1_noEvents = curvePolyDeTrend(raw_curve_noEvents, exclude=current_event_frames)
+        sigma1_noEvents = np.sqrt(np.median(np.power(charx1_noEvents[1:] - charx1_noEvents[:-1], 2)) / 0.9113)
+
+        charxBg1_noEvents = np.min(moving_average(charx1_noEvents, Tww))
+        charxBg1_noEvents -= bbm * sigma1_noEvents  # TODO bbm is set to zero!?
+        charxBg1_noEvents -= background_fluorescence
+
+        dff1_noEvents = (charx1_noEvents - charxBg1_noEvents) / charxBg1_noEvents  # TODO this is terrible
+        sigma1dff_noEvents = np.sqrt(np.median(np.power(dff1_noEvents[1:] - dff1_noEvents[:-1], 2)) / 0.9113)
+
+        dff1Sel_noEvents = dff1_noEvents[bbox_z0:bbox_z1]
+        dff1Max_noEvents = np.max(dff1Sel_noEvents)
 
     return ftsLst, dffMat, dMat
 
-def curvePolyDeTrend(curve, event_indices):
 
-    X = range(len(curve))
+def curvePolyDeTrend(curve, exclude=None):
+
+    # TODO this implementation makes very little sense with our data
+
+    X = np.array(range(len(curve)))
     Y = curve
 
+    # exclude activate frames from calculating baseline
+    if exclude is not None:
+        X = X[~exclude]
+        Y = Y[~exclude]
 
+    # define first order polynome function
+    def poly1(x, m, n):
+        return m*x + n
 
+    # fit baseline
+    popt, pcov = curve_fit(poly1, X, Y)
 
+    # calculate baseline for complete time range
+    y_fit = poly1(range(len(curve)), *popt)
+
+    # subtract baseline
+    curve -= y_fit
+    curve -= np.min(curve) + min(Y)
+
+    return curve
 
 
 def moving_average_h5(path, loc, output, x, y, w,
