@@ -13,7 +13,8 @@ from itertools import product
 from multiprocessing import shared_memory
 from pathos.multiprocessing import ProcessingPool as Pool
 from scipy.optimize import curve_fit
-
+from scipy.stats import norm
+from scipy import signal
 
 class ActTop:
 
@@ -528,8 +529,7 @@ def getLmAll(data, arLst, arLst_properties, fsz=(1, 1, 0.5), bounding_box_extens
 
 
 def getFeaturesTop(data, evtMap, arLst_properties,
-                   frame_rate, spatial_resolution, movAvgWin,
-                   fit_option="exp1", fit_max_iter=100,
+                   seconds_per_frame, spatial_resolution, movAvgWin, prominence,
                    background_fluorescence=0,
                    use_poissoin_noise_model=False,
                    skip_single_frame_events=True):
@@ -543,7 +543,6 @@ def getFeaturesTop(data, evtMap, arLst_properties,
     # replace events with median of surrounding (impute)
     datx = data.copy()  # TODO really necessary?
     datx[evtMap > 0] = None  # set all detected events None
-
     for evt in arLst_properties:
 
         # get bounding box
@@ -568,14 +567,11 @@ def getFeaturesTop(data, evtMap, arLst_properties,
     bbm = 0
 
     ftsLst = {}
-    ftsLst["baisc"] = []
-    ftsLst["propagation"] = []
 
-    dMat = np.zeros((len(arLst_properties), Z, 2), dtype=np.single)
-    dffMat = np.zeros((len(arLst_properties), Z, 2), dtype=np.single)
+    # dMat = np.zeros((len(arLst_properties), Z, 2), dtype=np.single)
+    # dffMat = np.zeros((len(arLst_properties), Z, 2), dtype=np.single)
 
     for i, evt in enumerate(arLst_properties):
-
         bbox_z0, bbox_x0, bbox_y0, bbox_z1, bbox_x1, bbox_y1 = evt.bbox  # bounding box coordinates
 
         # skip if event is only one frame long
@@ -613,8 +609,6 @@ def getFeaturesTop(data, evtMap, arLst_properties,
         raw_curve_noEvents = np.mean(dInst, axis=(1, 2), where=xy_footprint)
         raw_curve_noEvents[bbox_z0:bbox_z1] = raw_curve[bbox_z0:bbox_z1]  # splice current event back in
 
-
-        # TODO active frames is updated
         current_event_frames = np.zeros(Z, dtype=np.bool_)
         current_event_frames[bbox_z0:bbox_z1] = 1
         charx1_noEvents = curvePolyDeTrend(raw_curve_noEvents, exclude=current_event_frames)
@@ -628,9 +622,185 @@ def getFeaturesTop(data, evtMap, arLst_properties,
         sigma1dff_noEvents = np.sqrt(np.median(np.power(dff1_noEvents[1:] - dff1_noEvents[:-1], 2)) / 0.9113)
 
         dff1Sel_noEvents = dff1_noEvents[bbox_z0:bbox_z1]
-        dff1Max_noEvents = np.max(dff1Sel_noEvents)
 
-    return ftsLst, dffMat, dMat
+        # p_values
+        if len(dff1Sel_noEvents) > 1:
+            dff1Max_noEvents = np.max(dff1Sel_noEvents)
+            dff_noEvents_tmax = np.argmax(dff1Sel_noEvents)
+
+            xMinPre = max(np.min(dff1Sel_noEvents[:max(dff_noEvents_tmax, 1)]), sigma1dff)
+            xMinPost = max(np.min(dff1Sel_noEvents[dff_noEvents_tmax:]), sigma1dff)
+            dffMaxZ = np.max((dff1Max_noEvents-xMinPre+dff1Max_noEvents-xMinPost)/sigma1dff/2, 0)
+            dffMaxPval = 1 - norm.cdf(dffMaxZ)
+        else:
+            dffMaxZ = None
+            dffMaxPval = None
+
+        # > extend event window in the curve
+        evtMap_ = evtMap.copy()
+        evtMap_[evt.label] = 0  # exclude current event
+        bbox_z_ext, dff_ext = extendEventTimeRangeByCurve(dff1_noEvents, evtMap_, (bbox_z0, bbox_z1))
+
+        # > calculate curve statistics
+        curve_stats = getCurveStat(dff_ext, seconds_per_frame, prominence, curve_label=i)
+
+        # > save curve parameters
+
+        # dffMat[i, :, 0] = dff1
+        # dffMat[i, :, 1] = dff1_noEvents
+        #
+        # dMat[i, :, 0] = charx1
+        # dMat[i, :, 1] = charx1_noEvents
+
+        ftsLst[i] = {}
+
+        ftsLst[i]["stats"] = curve_stats
+
+        ftsLst[i]["event"] = {
+            "bbox_z": (bbox_z0, bbox_z1),
+            "bbox_x": (bbox_x0, bbox_x1),
+            "bbox_y": (bbox_y0, bbox_y1),
+            "footprint": xy_footprint,
+            "mask": evt.image,
+            "label": evt.label,
+            "area": evt.area,
+            "centroid": evt.centroid,
+            "inertia_tensor": evt.inertia_tensor,
+            # "solidity": evt.solidity,
+        }
+
+        ftsLst[i]["curve"] = {
+            "rgt1": (bbox_z0, bbox_z1),
+            "dff_max": dff1Max,
+            "dff_noEvents_max": dff1Max_noEvents,
+            "dff_max_z": dffMaxZ,
+            "dff_max_pval": dffMaxPval,
+            "duration": (bbox_z1-bbox_z0)*seconds_per_frame,
+            "AUC_raw": np.sum(raw_curve[bbox_z0:bbox_z1]),
+            "AUC_dff": np.sum(dff1Sel_noEvents),
+            "dFF": dff1,
+            "dFF_noEvents": dff1_noEvents,
+            "raw_curve": charx1,
+            "raw_curve_noEvents": charx1_noEvents
+        }
+
+    return ftsLst
+
+
+def getCurveStat(curve, seconds_per_frame, prominence, curve_label=None,
+                 relative_height=(0.1, 0.5, 0.9),
+                 enforce_single_peak=True, max_iterations=50,
+                 ignore_tau=False):
+
+    curve_stat = {}
+
+    # > identify peak
+    peak_x, peak_props = signal.find_peaks(curve, prominence=prominence)
+
+    num_iterations = 0
+    while enforce_single_peak and (num_iterations <= max_iterations):
+
+        # correct number of peaks
+        if len(peak_x) == 1:
+            break
+
+        # not enough peaks found
+        if len(peak_x) < 1:
+            prominence *= 0.9
+
+        # too many peaks found
+        if len(peak_x) > 1:
+            prominence *= 1.05
+
+        peak_x, peak_props = signal.find_peaks(curve, prominence=prominence)
+        num_iterations += 1
+
+    if len(peak_x) > 1:
+        print("Warning: more than one peak identified in curve [#{}]. Consider increasing 'max_iterations' or "
+              "improving baseline subtraction".format(len(peak_x)))
+
+    peak_x = peak_x[0]
+    peak_prominence = peak_props["prominences"][0]
+    peak_right_base = peak_props["right_bases"][0]
+    peak_left_base = peak_props["left_bases"][0]
+
+    curve_stat["x"] = peak_x
+    curve_stat["prominence"] = peak_prominence
+    curve_stat["height"] = curve[peak_x]
+    curve_stat["left_base"] = peak_left_base
+    curve_stat["right_base"] = peak_right_base
+    curve_stat["rise_time"] = (peak_x - peak_left_base) * seconds_per_frame
+    curve_stat["fall_time"] = (peak_right_base - peak_x) * seconds_per_frame
+    curve_stat["width"] = (peak_right_base - peak_left_base) * seconds_per_frame
+
+    # > identify relative width
+    for nThr, thr in enumerate(relative_height):
+
+        # find position at which curve crosses threshold closest to peak
+        peak_char = signal.peak_widths(curve, [peak_x], rel_height=thr)
+        peak_width, peak_width_height, peak_left_ips, peak_right_ips = peak_char
+
+        curve_stat["peak_width_{}".format(thr*100)] = peak_width
+        curve_stat["peak_height_{}".format(thr*100)] = peak_width_height
+        curve_stat["peak_left_ips_{}".format(thr*100)] = peak_left_ips
+        curve_stat["peak_right_ips_{}".format(thr*100)] = peak_right_ips
+
+        curve_stat["rise_{}".format(thr*100)] = (curve_stat["x"] - peak_left_ips) * seconds_per_frame
+        curve_stat["fall_{}".format(thr*100)] = (peak_right_ips - curve_stat["x"]) * seconds_per_frame
+        curve_stat["width_{}".format(thr*100)] = (peak_right_ips - peak_left_ips) * seconds_per_frame
+
+    # > fit exponential decay
+    if ~ ignore_tau:
+        Y = curve[peak_x:peak_right_base]
+        X = range(0, peak_right_base-peak_x)
+
+        def exp_func(x, a, b, c):
+            return a * np.exp(-b * x) + c
+
+        popt = None
+        try:
+            popt, pcov = curve_fit(exp_func, X, Y)
+        except (RuntimeError, TypeError) as err:
+            print("Error occured in curve fitting for exponential decay. [#{}]".format(
+                curve_label if curve_label is not None else "?"
+            ))
+            print(err)
+
+        if popt is not None:
+            curve_stat["decayTau"] = -1/popt[1]*seconds_per_frame
+        else:
+            curve_stat["decayTau"] = None
+
+    return curve_stat
+
+
+def extendEventTimeRangeByCurve(dff, sigXOthers, bbox_z):
+
+    bbox_z0, bbox_z1 = bbox_z
+
+    T = len(dff)
+    t0 = max(bbox_z0-1, 0)
+    t1 = min(bbox_z1+1, T)
+
+    # find local minimum between prior/next event and the current event
+    if bbox_z0 > 0:
+        i0 = len(sigXOthers) - np.argmax(sigXOthers[:t0:-1]) - 1  # closest event prior to current
+        t0_min = i0 + np.argmin(dff[i0:bbox_z0]) - 1
+    else:
+        t0_min = bbox_z0
+
+    if bbox_z1 < T:
+        i1 = np.argmax(sigXOthers[t1:]) + t1 - 1  # closest event post current event
+        t1_min = bbox_z1 + np.argmin(dff[bbox_z1:i1]) - 1
+    else:
+        t1_min = bbox_z1
+
+    # ?
+    if t0_min >= t1_min:
+        t0_min = t0
+        t1_min = t1
+
+    return (t0_min, t1_min), dff[t0_min:t1_min]
 
 
 def curvePolyDeTrend(curve, exclude=None):
