@@ -8,6 +8,7 @@ import scipy.ndimage as ndimage
 from scipy.stats import zscore
 from skimage import measure
 from skimage import morphology
+from skimage import segmentation
 import multiprocessing as mp
 from itertools import product
 from multiprocessing import shared_memory
@@ -686,6 +687,142 @@ def getFeaturesTop(data, evtMap, arLst_properties,
 
     return ftsLst
 
+def getFeaturesPropTop(data, arLst_properties, ftsLst, spatialRes,
+                       evtRec=None, north_x=0, north_y=1,
+                       propagation_threshold_min=0.2, propagation_threshold_max=0.8, propagation_threshold_step=0.1):
+
+    if evtRec is None:
+        evtRec = 255*np.ones(data.shape)
+
+    Z, X, Y = evtRec.shape
+
+    ftsLst["propagation_direction_order"] = ["north", "south", "west", "east"]
+    kDi = [
+        [north_x, north_y],
+        [-north_x, -north_y],
+        [-north_y, north_x],
+        [north_y, -north_x]
+    ]
+
+    # define propagation thresholds
+    if propagation_threshold_min == propagation_threshold_max:
+        thr_range = [propagation_threshold_min]
+    else:
+        thr_range = np.arange(propagation_threshold_min, propagation_threshold_max, propagation_threshold_step)
+
+    for i, evt in enumerate(arLst_properties):
+
+        # get bounding box
+        bbox_z0, bbox_x0, bbox_y0, bbox_z1, bbox_x1, bbox_y1 = evt.bbox  # bounding box coordinates
+        dInst = data[bbox_z0:bbox_z1, bbox_x0:bbox_x1, bbox_y0:bbox_y1]  # bounding box intensity
+        mskST = evt.image  # binary mask of active region
+        bbZ, bbX, bbY = mskST.shape
+
+        voli0 = mskST  # TODO stupid variable names
+        volr0 = np.ones(voli0.shape)  # TODO would be something useful if more of the AquA algorithm were implemented
+
+        # prepare active pixels
+        volr0[voli0 == 0] = 0  # TODO this is useless; could define volr0 differently
+        volr0[volr0 < min(thr_range)] = 0  # exclude pixels below lowest threshold
+        sigMapXY = np.sum(volr0 >= min(thr_range), axis=0)
+        nPix = np.sum(sigMapXY > 0)
+
+        # mask for directions relative to 1st frame centroid
+        centroid_x0, centroid_y0 = np.round(measure.centroid(mskST[0, :, :])).astype(int)
+
+        msk = np.zeros((bbX, bbY, 4))
+        msk[:centroid_x0, :, 0] = 1  # north
+        msk[centroid_x0:, :, 1] = 1  # south
+        msk[:, :centroid_y0, 2] = 1  # west
+        msk[:, centroid_y0:, 3] = 1  # east
+
+        # locations of centroid
+        sigDist = np.full((bbZ, 4, len(thr_range)), np.nan)  # TODO could probably also be zeros
+        boundary = {}
+        propMaxSpeed = np.zeros((bbZ, len(thr_range)))
+        pixNum = np.zeros((bbZ, len(thr_range)))
+        for cz in range(bbZ):
+
+            current_frame = mskST[cz, :, :]
+            for thr_i, thr in enumerate(thr_range):
+
+                # threshold current frame
+                current_frame_thr = current_frame >= thr
+                pixNum[cz, thr_i] = np.sum(current_frame_thr)
+
+                # define boundary / contour
+                current_frame_thr_closed = morphology.binary_closing(current_frame_thr)  # fill holes
+                cur_contour = measure.find_contours(current_frame_thr_closed)
+                if len(cur_contour) < 1:
+                    continue
+                cur_contour = np.array(cur_contour[0])[:, ::-1]
+                boundary[(cz, thr_i)] = cur_contour
+
+                # calculate propagation speed
+                if cz > 1:
+
+                    prev_contour = boundary[(cz-1, thr_i)]
+                    for px in cur_contour:
+                        shift = px-prev_contour
+                        dist = np.sqrt(np.power(shift[:, 0], 2) + np.power(shift[:, 1], 2))
+                        current_speed = min(dist)
+                        propMaxSpeed[cz, thr_i] = max(propMaxSpeed[cz, thr_i], current_speed)
+
+                    for px in prev_contour:
+                        shift = px-cur_contour
+                        dist = np.sqrt(np.power(shift[:, 0], 2) + np.power(shift[:, 1], 2))
+                        current_speed = min(dist)
+                        propMaxSpeed[cz, thr_i] = max(propMaxSpeed[cz, thr_i], current_speed)
+
+                # mask with directions
+                for direction_i in range(4):
+
+                    img0 = np.multiply(current_frame_thr, msk[:, :, direction_i])
+                    img0_mask = img0 > 0
+
+                    curr_centroid_x0, curr_centroid_y0 = measure.centroid(img0_mask[:, :])
+                    dx, dy = curr_centroid_x0 - centroid_x0, curr_centroid_y0-centroid_y0
+
+                    sigDist[cz, direction_i, thr_i] = sum(np.multiply([dx, dy], kDi[direction_i]))
+
+        # collect results
+        prop = np.zeros(sigDist.shape) - 1  # np.full(sigDist.shape, None)
+        prop[1:, :, :] = sigDist[1:, :, :] - sigDist[:-1, :, :]
+        # prop[1:, :, :] = np.nansum(sigDist[1:, :, :], -1*sigDist[:-1, :, :])
+
+        propGrowMultiThr = prop.copy()
+        propGrowMultiThr[propGrowMultiThr < 0] = None
+        propGrow = np.nanmax(propGrowMultiThr, axis=2)
+        propGrow[np.isnan(propGrow)] = 0
+        propGrowOverall = np.nansum(propGrow, 0)
+
+        propShrinkMultiThr = prop.copy()
+        propShrinkMultiThr[propShrinkMultiThr > 0] = None
+        propShrink = np.nanmax(propShrinkMultiThr, axis=2)
+        propShrink[np.isnan(propShrink)] = 0
+        propShrinkOverall = np.nansum(propShrink, 0)
+
+        pixNumChange = np.zeros(pixNum.shape)
+        pixNumChange[1:] = pixNum[1:, :] - pixNum[:-1, :]
+        pixNumChangeRateMultiThr = pixNumChange / nPix
+        pixNumChangeRateMultiThrAbs = np.abs(pixNumChangeRateMultiThr)
+        pixNumChangeRate = np.max(pixNumChangeRateMultiThrAbs, axis=1)
+
+        # save results
+        ftsLst[i]["propagation"] = {
+            "propGrow": propGrow * spatialRes,
+            "propGrowOverall": propGrowOverall * spatialRes,
+            "propShrink": propShrink * spatialRes,
+            "propShrinkOverall": propShrinkOverall * spatialRes,
+            "areaChange": pixNumChange * spatialRes * spatialRes,
+            "areaChangeRate": pixNumChangeRate,
+            "areaFrame": pixNum * spatialRes * spatialRes,
+            "propMaxSpeed": propMaxSpeed * spatialRes,
+            "maxPropSpeed": np.max(propMaxSpeed),
+            "avgPropSpeed": np.mean(propMaxSpeed)
+        }
+
+    return ftsLst
 
 def getCurveStat(curve, seconds_per_frame, prominence, curve_label=None,
                  relative_height=(0.1, 0.5, 0.9),
@@ -1066,6 +1203,9 @@ if __name__ == "__main__":
     arLst, arLst_properties = getAr(data, 3, stdEst, 10, evtSpatialMask=None)
     print(len(arLst_properties))
     show(arLst[50, :, :])
+
+    ftsLst = getFeaturesTop(data, arLst, arLst_properties, 1, 1, 25, 3)
+    ftsLst = getFeaturesPropTop(data, arLst_properties, ftsLst, 1)
 
     # print(len(arLst))
 
