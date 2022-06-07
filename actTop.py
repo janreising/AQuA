@@ -1,6 +1,7 @@
 import argparse
 import os
 import h5py as h5
+import tiledb
 import numpy as np
 import time
 from itertools import product
@@ -12,8 +13,19 @@ from scipy.optimize import curve_fit
 
 from skimage import measure, morphology  # , segmentation
 
+import dask.array as da
+from dask.diagnostics import ProgressBar
+
+import matplotlib.pyplot as plt
+
 import multiprocessing as mp
 from multiprocessing import shared_memory
+
+import sys
+import traceback
+import warnings
+
+
 # from pathos.multiprocessing import ProcessingPool as Pool
 
 
@@ -30,7 +42,7 @@ class EventDetector:
                  output: str = None, indices: np.array = None, verbosity: int = 1):
 
         # quality check arguments
-        assert os.path.isfile(file_path), f"input file does not exist: {file_path}"
+        assert os.path.isfile(file_path) or os.path.isdir(file_path), f"input file does not exist: {file_path}"
         assert output is None or ~ os.path.isfile(output), f"output file already exists: {output}"
         assert indices is None or indices.shape == (3, 2), "indices must be np.arry of shape (3, 2) -> ((z0, z1), " \
                                                            "(x0, x1), (y0, y1)). Found: " + indices
@@ -60,31 +72,32 @@ class EventDetector:
         # Variables
         self.file = None
 
-    def run(self, dataset=None):
+    def run(self, dataset=None,
+            threshold=3, min_size=20, moving_average=25, dask=False,
+            subset=None):
 
-        in_memory = True
-        threshold = 3
-        min_size = 10
-        mvgAvg = 25
-
-        data = self._load(dataset_name=dataset, in_memory=in_memory)
+        data = self._load(dataset_name=dataset, dask=dask, subset=subset)
+        self.vprint(data if dask else data.shape, 2)
 
         noise = self.estimate_background(data)
 
         event_map, event_properties = self.get_events(data, roi_threshold=threshold, var_estimate=noise,
                                                       min_roi_size=min_size)
 
-        features = self.calculate_event_features(data, event_map, event_properties, 1, mvgAvg, threshold)
+        features = self.calculate_event_features(data, event_map, event_properties, 1, moving_average, threshold)
         features = self.calculate_event_propagation(data, event_properties, features)
 
-        return features
+        # self.event_map = event_map
+        # self.event_properties = event_properties
+        # self.features = features
+
+        return event_map, features
 
     def verbosity_print(self, verbosity_level: int):
 
         """ Creates print function that takes global verbosity level into account """
 
         def v_level_print(msg: str, urgency: int):
-
             """ print function that checks if urgency is higher than global verbosity setting
 
             :param msg: message of the printout
@@ -93,11 +106,12 @@ class EventDetector:
             """
 
             if urgency <= verbosity_level:
-                print("{}{} {} {}".format("\t" * (urgency - 1), "*" * urgency, time.time() - self.last_timestamp, msg))
+                print("{}{} {:.2f}s {}".format("\t" * (urgency - 1), "*" * urgency, time.time() - self.last_timestamp,
+                                               msg))
 
         return v_level_print
 
-    def _load(self, dataset_name: str = None, in_memory: bool = True):
+    def _load(self, dataset_name: str = None, dask: bool = False, subset=None):
 
         """ loads data from file
 
@@ -113,17 +127,36 @@ class EventDetector:
             file = h5.File(self.file_path, "r")
             assert dataset_name in file, "dataset '{}' does not exist in file".format(dataset_name)
 
-            if in_memory:
-                data = file[dataset_name][:]
-                file.close()
+            data = da.from_array(file[dataset_name], chunks='auto') if dask else file[dataset_name]
 
-            else:
-                data = file[dataset_name]
+        elif self.file_path.endswith(".tdb"):
 
-            return data
+            data = tiledb.open(self.file_path)
 
-    @staticmethod
-    def get_events(data: np.array, roi_threshold: float, var_estimate: float,
+            if dask:
+                data = da.from_array(data, chunks='auto')
+
+        if subset is not None:
+            assert len(subset) == 6, "please provide a subset for all dimensions"
+            z0, z1, x0, x1, y0, y1 = subset
+
+            z0 = z0 if z0 is not None else 0
+            x0 = x0 if x0 is not None else 0
+            y0 = y0 if y0 is not None else 0
+
+            Z, X, Y = data.shape
+            z1 = z1 if z1 is not None else Z
+            x1 = x1 if x1 is not None else X
+            y1 = y1 if y1 is not None else Y
+
+            data = data[z0:z1, x0:x1, y0:y1]
+
+        if not dask:
+            data = data[:]
+
+        return data
+
+    def get_events(self, data: np.array, roi_threshold: float, var_estimate: float,
                    min_roi_size: int = 10, mask_xy: np.array = None) -> (np.array, dict):
 
         """ identifies events in data based on threshold
@@ -139,21 +172,39 @@ class EventDetector:
             event_properties: list of scipy.regionprops items
         """
 
-        Z, X, Y = data.shape
-
+        # threshold data by significance value
         active_pixels = np.zeros(data.shape, dtype=np.bool8)
-        for z in range(Z):
+        # self.vprint("Noise threshold: {:.2f}".format(roi_threshold * np.sqrt(var_estimate)), 4)
+        active_pixels[:] = data > roi_threshold * np.sqrt(var_estimate)
+        self.vprint("identified active pixels", 3)
 
-            img_thresh = data[z, :, :] > roi_threshold * np.sqrt(var_estimate)
-            img_thresh = morphology.remove_small_objects(img_thresh, min_size=min_roi_size, connectivity=4)
+        # mask inactive pixels (accelerates subsequent computation)
+        if mask_xy is not None:
+            np.multiply(active_pixels, mask_xy, out=active_pixels)
+            self.vprint("masked inactive pixels", 3)
 
-            if mask_xy is not None:
-                img_thresh = np.multiply(img_thresh, mask_xy)
+        # subsequent analysis hard to parallelize; save in memory
+        if type(active_pixels) == da.core.Array:
+            self.vprint("computing ...", 3)
+            active_pixels = active_pixels.compute()
 
-            active_pixels[z, :, :] = img_thresh
+        # remove small objects
+        # might be able to be solved with dilation / erosion sequence
+        for cz in range(active_pixels.shape[0]):
+            active_pixels[cz, :, :] = morphology.remove_small_objects(active_pixels[cz, :, :],
+                                                                      min_size=min_roi_size, connectivity=4)
+        self.vprint("removed small objects", 3)
 
-        event_map = measure.label(active_pixels)
-        event_properties = measure.regionprops(event_map, intensity_image=data)  # TODO split if necessary
+        # label connected pixels
+        # event_map, num_events = measure.label(active_pixels, return_num=True)
+        event_map = np.zeros(data.shape, dtype=np.uint16)
+        event_map[:], num_events = ndimage.label(active_pixels)
+        self.vprint("labelled connected pixel. #events: {}".format(num_events), 3)
+
+        # characterize each event
+        event_properties = measure.regionprops(event_map,
+                                               intensity_image=data)  # TODO should be data  # TODO split if necessary
+        self.vprint("events characterized", 3)
 
         return event_map, event_properties
 
@@ -182,28 +233,27 @@ class EventDetector:
         if use_poissoin_noise_model:
             data = np.sqrt(data)
 
-        # replace events with median of surrounding (impute)
-        datx = data.copy()  # TODO really necessary?
-        datx[event_map > 0] = None  # set all detected events None
-        for evt in event_properties:
-
-            # get bounding box
-            bbox_z0, bbox_x0, bbox_y0, bbox_z1, bbox_x1, bbox_y1 = evt.bbox  # bounding box coordinates
-            dInst = data[bbox_z0:bbox_z1, bbox_x0:bbox_x1, bbox_y0:bbox_y1]  # bounding box intensity
-            mskST = evt.image  # binary mask of active region
-
-            # print(evt.solidity)
-
-            # calculate not NaN median for masks that are not 100% of the bounding box
-            if evt.extent < 1:
-                median_inv_mask = np.nanmedian(dInst[~mskST])
-            else:
-                median_inv_mask = np.min(dInst)
-
-            # replace NaN with median
-            box = datx[bbox_z0:bbox_z1, bbox_x0:bbox_x1, bbox_y0:bbox_y1]
-            box[np.isnan(box)] = median_inv_mask
-            datx[bbox_z0:bbox_z1, bbox_x0:bbox_x1, bbox_y0:bbox_y1] = box
+        # # replace events with median of surrounding (impute)
+        # datx = data.copy()  # TODO really necessary?
+        # print(datx.dtype)
+        # datx[event_map > 0] = np.nan  # set all detected events None
+        # for evt in event_properties:
+        #
+        #     # get bounding box
+        #     bbox_z0, bbox_x0, bbox_y0, bbox_z1, bbox_x1, bbox_y1 = evt.bbox  # bounding box coordinates
+        #     dInst = data[bbox_z0:bbox_z1, bbox_x0:bbox_x1, bbox_y0:bbox_y1]  # bounding box intensity
+        #     mskST = evt.image  # binary mask of active region
+        #
+        #     # calculate not NaN median for masks that are not 100% of the bounding box
+        #     if evt.extent < 1:
+        #         median_inv_mask = np.nanmedian(dInst[~mskST])
+        #     else:
+        #         median_inv_mask = np.min(dInst)
+        #
+        #     # replace NaN with median
+        #     box = datx[bbox_z0:bbox_z1, bbox_x0:bbox_x1, bbox_y0:bbox_y1]
+        #     box[np.isnan(box)] = median_inv_mask
+        #     datx[bbox_z0:bbox_z1, bbox_x0:bbox_x1, bbox_y0:bbox_y1] = box
 
         Tww = min(smoothing_window, Z / 4)
         bbm = 0
@@ -217,12 +267,18 @@ class EventDetector:
             bbox_z0, bbox_x0, bbox_y0, bbox_z1, bbox_x1, bbox_y1 = evt.bbox  # bounding box coordinates
 
             # skip if event is only one frame long
-            if skip_single_frame_events and (bbox_z0 == bbox_z1):
+            if skip_single_frame_events and bbox_z1 - bbox_z0 < 2:
+                self.vprint("skipping event since it exists for less than 2 frames [{}]".format(i), 4)
                 continue
 
             mskST = evt.image  # binary mask of active region
             mskSTSeed = evt.intensity_image  # real values of region (equivalent to dInst .* mskST)
-            dInst = data[:, bbox_x0:bbox_x1, bbox_y0:bbox_y1]  # bounding box intensity; full length Z
+            dInst = data[:, bbox_x0:bbox_x1, bbox_y0:bbox_y1].compute()  # bounding box intensity; full length Z
+
+            dInst_x = dInst.copy()
+            dInst_x[event_map[:, bbox_x0:bbox_x1, bbox_y0:bbox_y1] > 0] = None  # replace all events with None
+            np.nan_to_num(dInst_x, copy=False, nan=np.nanmedian(dInst_x))
+            # TODO fill NaN with sth more sensible (eg. surrounding non-none pixels or interpolate)
 
             # calculate active pixels in XY
             xy_footprint = np.max(mskST, axis=0)
@@ -234,7 +290,9 @@ class EventDetector:
             # > dFF
             raw_curve = np.mean(dInst, axis=(1, 2), where=xy_footprint)
 
+
             charx1 = self.detrend_curve(raw_curve, exclude=active_frames)
+
             sigma1 = np.sqrt(np.median(np.power(charx1[1:] - charx1[:-1], 2)) / 0.9113)
 
             charxBg1 = np.min(self.moving_average(charx1, Tww))
@@ -248,7 +306,7 @@ class EventDetector:
             dff1Max = np.max(dff1Sel)
 
             # > dFF without other events
-            raw_curve_noEvents = np.mean(dInst, axis=(1, 2), where=xy_footprint)
+            raw_curve_noEvents = np.mean(dInst_x, axis=(1, 2), where=xy_footprint)
             raw_curve_noEvents[bbox_z0:bbox_z1] = raw_curve[bbox_z0:bbox_z1]  # splice current event back in
 
             current_event_frames = np.zeros(Z, dtype=np.bool_)
@@ -266,6 +324,7 @@ class EventDetector:
             dff1Sel_noEvents = dff1_noEvents[bbox_z0:bbox_z1]
 
             # p_values
+            dff1Max_noEvents = None
             if len(dff1Sel_noEvents) > 1:
                 dff1Max_noEvents = np.max(dff1Sel_noEvents)
                 dff_noEvents_tmax = np.argmax(dff1Sel_noEvents)
@@ -279,8 +338,8 @@ class EventDetector:
                 dffMaxPval = None
 
             # > extend event window in the curve
-            evtMap_ = event_map.copy()
-            evtMap_[evt.label] = 0  # exclude current event
+            evtMap_ = event_map[:, bbox_x0:bbox_x1, bbox_y0:bbox_y1] > 0  # TODO THIS IS INSANITY
+            evtMap_[evtMap_ == evt.label] = 0  # exclude current event
             bbox_z_ext, dff_ext = self.extend_event_curve(dff1_noEvents, evtMap_, (bbox_z0, bbox_z1))
 
             # > calculate curve statistics
@@ -328,8 +387,7 @@ class EventDetector:
 
         return feature_list
 
-    @staticmethod
-    def calculate_event_propagation(data, event_properties: dict, feature_list,
+    def calculate_event_propagation(self, data, event_properties: dict, feature_list,
                                     spatial_resolution: float = 1, event_rec=None, north_x=0, north_y=1,
                                     propagation_threshold_min=0.2, propagation_threshold_max=0.8,
                                     propagation_threshold_step=0.1):
@@ -369,6 +427,9 @@ class EventDetector:
             thr_range = np.arange(propagation_threshold_min, propagation_threshold_max, propagation_threshold_step)
 
         for i, evt in enumerate(event_properties):
+
+            if i not in features.keys():
+                continue
 
             # get bounding box
             bbox_z0, bbox_x0, bbox_y0, bbox_z1, bbox_x1, bbox_y1 = evt.bbox  # bounding box coordinates
@@ -411,7 +472,12 @@ class EventDetector:
 
                     # define boundary / contour
                     current_frame_thr_closed = morphology.binary_closing(current_frame_thr)  # fill holes
+                    dim_x, dim_y = current_frame_thr_closed.shape
+                    if dim_x < 3 or dim_y < 3:
+                        continue
+
                     cur_contour = measure.find_contours(current_frame_thr_closed)
+
                     if len(cur_contour) < 1:
                         continue
                     cur_contour = np.array(cur_contour[0])[:, ::-1]
@@ -467,6 +533,10 @@ class EventDetector:
             pixNumChangeRate = np.max(pixNumChangeRateMultiThrAbs, axis=1)
 
             # save results
+            if i not in feature_list.keys():
+                self.vprint("ROI features doesn't exist [{}]".format(i), 4)
+                feature_list[i] = {}
+
             feature_list[i]["propagation"] = {
                 "propGrow": propGrow * spatial_resolution,
                 "propGrowOverall": propGrowOverall * spatial_resolution,
@@ -482,10 +552,9 @@ class EventDetector:
 
         return feature_list
 
-    @staticmethod
-    def _get_curve_statistics(curve: np.array, seconds_per_frame: float, prominence: float,
+    def _get_curve_statistics(self, curve: np.array, seconds_per_frame: float, prominence: float,
                               curve_label: str = None, relative_height: list = (0.1, 0.5, 0.9),
-                              enforce_single_peak: bool = True, max_iterations: int = 50,
+                              enforce_single_peak: bool = True, max_iterations: int = 100,
                               ignore_tau=False):
 
         """ calculate characteristic of fluorescence trace
@@ -508,7 +577,7 @@ class EventDetector:
         peak_x, peak_props = signal.find_peaks(curve, prominence=prominence)
 
         num_iterations = 0
-        while enforce_single_peak and (num_iterations <= max_iterations):
+        while enforce_single_peak and num_iterations <= max_iterations:
 
             # correct number of peaks
             if len(peak_x) == 1:
@@ -525,11 +594,19 @@ class EventDetector:
             peak_x, peak_props = signal.find_peaks(curve, prominence=prominence)
             num_iterations += 1
 
+        if len(peak_x) < 1:
+            self.vprint("Warning: no peak identified in curve [#{}]. Consider increasing 'max_iterations' "
+                        "or improving baseline subtraction".format(len(peak_x)), 4)
+            curve_stat = {}
+            return curve_stat
+
         if len(peak_x) > 1:
-            print("Warning: more than one peak identified in curve [#{}]. Consider increasing 'max_iterations' or "
-                  "improving baseline subtraction".format(len(peak_x)))
+            self.vprint("Warning: more than one peak identified in curve [#{}]. Consider increasing 'max_iterations' "
+                        "or improving baseline subtraction".format(len(peak_x)), 4)
+            peak_x = [peak_x[0]]
 
         peak_x = peak_x[0]
+
         peak_prominence = peak_props["prominences"][0]
         peak_right_base = peak_props["right_bases"][0]
         peak_left_base = peak_props["left_bases"][0]
@@ -568,12 +645,16 @@ class EventDetector:
 
             popt = None
             try:
-                popt, pcov = curve_fit(exp_func, X, Y)
-            except (RuntimeError, TypeError) as err:
-                print("Error occured in curve fitting for exponential decay. [#{}]".format(
-                    curve_label if curve_label is not None else "?"
-                ))
-                print(err)
+
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    popt, pcov = curve_fit(exp_func, X, Y)
+
+            except (RuntimeError, TypeError, ValueError) as err:
+                self.vprint("Error occured in curve fitting for exponential decay. [#{}] {}".format(
+                    curve_label if curve_label is not None else "?",
+                    err
+                ), 4)
 
             if popt is not None:
                 curve_stat["decayTau"] = -1 / popt[1] * seconds_per_frame
@@ -639,42 +720,40 @@ class EventDetector:
         if mask_xy is not None:
             stdMap[~mask_xy] = None
 
-        stdEst = np.nanmedian(stdMap)  # dim: 1
+        stdEst = np.nanmedian(stdMap.flatten(), axis=0)  # dim: 1
 
         return stdEst
 
     @staticmethod
-    def moving_average(arr: np.array, window: int) -> np.array:
+    def moving_average(arr: np.array, window: int, axis: int = 0) -> np.array:
 
         """ fast implementation of windowed average
 
         :param arr: np.array of 1D, 2D or 3D shape. First dimension will be used for windowing
         :param window: window size for averaging
+        :param axis: axis to reduce
+        :param dask: flag to use dask multiprocessing
         :return: array of same size as input
         """
 
-        if len(arr.shape) == 1:
-            res = ndimage.filters.uniform_filter1d(arr, size=window)
+        if type(arr) == da.core.Array:
 
-        if len(arr.shape) == 2:
-            _, X = arr.shape
+            depth = {0: window, 1: 0, 2: 0}
 
-            res = np.zeros(arr.shape)
-            for x in range(X):
-                res[:, x] = ndimage.filters.uniform_filter1d(arr[:, x], size=window)
+            overlapping_grid = da.overlap.overlap(arr, depth=depth, boundary='reflect')
+            mov_average_grid = overlapping_grid.map_blocks(ndimage.filters.uniform_filter, window)
+            trimmed_grid = da.overlap.trim_internal(mov_average_grid, depth)
 
-        if len(arr.shape) == 3:
+            return trimmed_grid
 
-            _, X, Y = arr.shape
+        else:
 
-            res = np.zeros(arr.shape)
-            for x, y in list(zip(range(X), range(Y))):
-                res[:, x, y] = ndimage.filters.uniform_filter1d(arr[:, x, y], size=window)
+            size = np.zeros(len(arr.shape))
+            size[axis] = window
 
-        return res
+            return ndimage.filters.uniform_filter(arr, size=size)
 
-    @staticmethod
-    def detrend_curve(curve: np.array, exclude: np.array = None) -> np.array:
+    def detrend_curve(self, curve: np.array, exclude: np.array = None) -> np.array:
 
         """ detrends curve with first order polynomial
 
@@ -692,6 +771,10 @@ class EventDetector:
         if exclude is not None:
             X = X[~exclude]
             Y = Y[~exclude]
+
+        if len(Y) == 0:
+            self.vprint("All data points were excluded due to active frames. Returning original Y instead", 4)
+            return curve
 
         # define first order polynomial function
         def poly1(x, m, n):
@@ -721,23 +804,53 @@ class EventDetector:
         """
 
         bbox_z0, bbox_z1 = bbox_z
+        event_timings = np.min(event_timings, axis=(1, 2))
+
+        # TODO check if this is actually legit
+        #  reasoning: if there are no other events in the footprint
+        #  then we can just analyze the full curve, no?
+        if np.sum(event_timings) == 0:
+            return (0, len(curve)), curve
 
         T = len(curve)
         t0 = max(bbox_z0 - 1, 0)
-        t1 = min(bbox_z1 + 1, T)
+        t1 = min(bbox_z1 + 1, T-1)
 
         # find local minimum between prior/next event and the current event
-        if bbox_z0 > 0:
-            i0 = len(event_timings) - np.argmax(event_timings[:t0:-1]) - 1  # closest event prior to current
-            t0_min = i0 + np.argmin(curve[i0:bbox_z0]) - 1
-        else:
-            t0_min = bbox_z0
+        try:
+            if bbox_z0 < 1:  # bbox starts with first frame
+                t0_min = bbox_z0
+            elif np.sum(event_timings[:t0]) < 1:  # no other events prior to event
+                t0_min = 0
+            else:
+                i0 = t0 - np.argmax(event_timings[:t0:]) - 1  # closest event prior to current
+                t0_min = i0 + np.argmin(curve[i0:bbox_z0]) - 1
 
-        if bbox_z1 < T:
-            i1 = np.argmax(event_timings[t1:]) + t1 - 1  # closest event post current event
-            t1_min = bbox_z1 + np.argmin(curve[bbox_z1:i1]) - 1
-        else:
-            t1_min = bbox_z1
+            if bbox_z1 > T-1:  # bbox ends with last frame
+                t1_min = bbox_z1
+            elif np.sum(event_timings[t1:]) < 1:  # no other events post event
+                t1_min = T
+            else:
+                i1 = np.argmax(event_timings[t1:]) + t1  # closest event post current event
+                t1_min = bbox_z1 + np.argmin(curve[bbox_z1:i1]) - 1
+
+        except ValueError as err:
+
+            # print("bbox_z1:T > ", bbox_z1, T)
+            # print("bbox_z1:i1 > ", bbox_z1, i0)
+            # print(event_timings[t1:])
+
+            print("i0:bbox_z0 > ", i0, bbox_z0)
+            print("np.sum(event_timings[:t0]) > ", np.sum(event_timings[:t0]))
+            print("np.argmax(event_timings[:t0:-1])", np.argmax(event_timings[:t0:-1]))
+            print("event_timings[:t0:-1]", event_timings[:t0:-1])
+
+            print("bbox_z1:i1 > ", bbox_z1, i1)
+
+            time.sleep(1)
+            print(err)
+            traceback.print_exc()
+            sys.exit(2)
 
         # ?
         if t0_min >= t1_min:
@@ -830,9 +943,12 @@ class Legacy:
 
         return dat, dF, stdEst
 
-
     def getARSim(data, smoMax, thrMin, minSize, evtSpatialMask=None,
                  smoCorr_location="smoCorr.h5"):
+
+        # TODO in this sSim is currently orders of magnitude too small compared to matlab implementation not clear
+        #  why that is
+
         # learn noise correlation
         T, H, W = data.shape
         T1 = min(T, 100)
@@ -953,7 +1069,6 @@ class Legacy:
 
         return dARAll, arLst, arLst_properties
 
-
     def getDfBlk_faster(path, loc, cut, movAvgWin, x_max=None, y_max=None, stdEst=None, spatialMask=None,
                         multiprocessing=True):
         # cut: frames per segment
@@ -1009,7 +1124,6 @@ class Legacy:
                     dF[:, ix, iy] = data[:, ix, iy] - min(moving_average(data[:, ix, iy], movAvgWin)) - xBias
 
         return dF
-
 
     def func_actTop(self, raw, dff, foreground_threshold=0, in_memory=True,
                     noise_estimation_method="original"):
@@ -1089,7 +1203,6 @@ class Legacy:
     
         """
 
-
     ########
     ## h5 ##
     ########
@@ -1110,7 +1223,6 @@ class Legacy:
         for xi in range(X):
             for yi in range(Y):
                 dF[:, x + xi, y + yi] = ndimage.filters.uniform_filter1d(chunk[:, xi, yi], size=w)
-
 
     def temp(path, x_range, y_range, thrARScl, varEst, minSize,
              buffer_name, buffer_dtype, buffer_shape,
@@ -1139,7 +1251,6 @@ class Legacy:
 
         print("DONE: ", x_range, y_range)
 
-
     def getAr_h5(path, thrARScl, varEst, minSize, location="dff/neu", evtSpatialMask=None,
                  x_range=None, y_range=None):
         # get data dimensions
@@ -1152,13 +1263,15 @@ class Legacy:
         if x_range is None:
             x0 = 0
         else:
-            assert x_range[0] % cx == 0, "x range start should be multiple of chunk length {}: {}".format(cx, x_range / cx)
+            assert x_range[0] % cx == 0, "x range start should be multiple of chunk length {}: {}".format(cx,
+                                                                                                          x_range / cx)
             x0, X = x_range
 
         if y_range is None:
             y0 = 0
         else:
-            assert y_range[0] % cy == 0, "y range start should be multiple of chunk length {}: {}".format(cy, y_range / cy)
+            assert y_range[0] % cy == 0, "y range start should be multiple of chunk length {}: {}".format(cy,
+                                                                                                          y_range / cy)
             y0, Y = y_range
 
         # created shared output array
@@ -1188,9 +1301,8 @@ class Legacy:
 
         return arLst  # , arLst_properties
 
-
     def calculate_noise_h5(data, reference_frame, method="original",
-                            chunked=False, ix=None, iy=None, max_x=None, max_y=None):
+                           chunked=False, ix=None, iy=None, max_x=None, max_y=None):
 
         # TODO pre-defined variables worth it? --> see after return
 
@@ -1198,13 +1310,13 @@ class Legacy:
         assert method in method_options, "method is unknown; options: " + method_options
 
         if not chunked:
-            #> noise estimate original --> similar to standard error!?
-            #TODO why exclude the first frame
+            # > noise estimate original --> similar to standard error!?
+            # TODO why exclude the first frame
             dist_squared = np.power(np.subtract(data[1:, :, :], reference_frame), 2)
 
         else:
             dist_squared = np.power(
-                    np.subtract(data[1:, 0:max_x, 0:max_y], reference_frame[ix:ix+max_x, iy:iy+max_y]),
+                np.subtract(data[1:, 0:max_x, 0:max_y], reference_frame[ix:ix + max_x, iy:iy + max_y]),
                 2)  # dim: cz, cx, cy
 
         # TODO why 0.9133
@@ -1214,7 +1326,6 @@ class Legacy:
 
 
 if __name__ == "__main__":
-
     """
     ## arguments
     parser = argparse.ArgumentParser()
@@ -1242,11 +1353,37 @@ if __name__ == "__main__":
     # c.run()
     """
 
-    file = "E:/data/22A5x4/22A5x4-1.zip.h5"
-    # file = "C:/Users/janrei/Desktop/22A5x4-2.zip.h5"
+    t0 = time.time()
 
-    ed = EventDetector(file, verbosity=3)
-    features = ed.run(dataset="dff/neu")
+    use_small = True
+    subset = None  # [0, None, None, None, None, None]
+    use_dask = True
+
+    # file path
+    directory = "C:/Users/janrei/Desktop/"
+    file = "22A5x4-1.zip.h5" if use_small else "22A5x4-2.zip.h5.tdb"
+    loc = "/dff/neu" if use_small else "/dff/ast/"
+    path = directory + file
+
+    # output = 'C:/Users/janrei/Desktop/22A5x4-2.zip.h5.tdb'
+
+    ed = EventDetector(path, verbosity=10)
+    event_map, features = ed.run(dataset=loc, threshold=3,
+                                         dask=use_dask, subset=subset)
+
+    print("{:.1f}s".format(time.time() - t0))
+
+    # # event_map = event_map > 1
+    # spacer = np.ones((600, 1))
+    # subset = [0, event_map.shape[0]] if subset is None else subset
+    # plt.imshow(np.concatenate((event_map[0, :, :], spacer,
+    #                            event_map[int(subset[1] / 2), :, :], spacer,
+    #                            event_map[subset[1] - 5, :, :]),
+    #                           axis=1))
+    # plt.show()
 
     print("Done!")
 
+    # print("Saving")
+    # evt_dask = da.from_array(event_map)
+    # evt_dask.to_tiledb(path+"evt_map.tdb")
