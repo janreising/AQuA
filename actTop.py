@@ -5,6 +5,8 @@ import tiledb
 import numpy as np
 import time
 from itertools import product
+import tempfile
+from tqdm import tqdm
 
 import scipy.ndimage as ndimage
 from scipy import signal
@@ -14,7 +16,8 @@ from scipy.optimize import curve_fit
 from skimage import measure, morphology  # , segmentation
 
 import dask.array as da
-from dask.diagnostics import ProgressBar
+from dask.diagnostics import ProgressBar, Profiler, ResourceProfiler
+from dask_image import ndmorph, ndfilters, ndmeasure
 
 import matplotlib.pyplot as plt
 
@@ -25,9 +28,16 @@ import sys
 import traceback
 import warnings
 
+import dask
 
-# from pathos.multiprocessing import ProcessingPool as Pool
+import json
 
+
+# from pathos.multiprocessing import ProcessingPool as pPool
+
+
+def analyze(event, arr):
+    arr[event.label] = event.label
 
 class EventDetector:
 
@@ -54,7 +64,6 @@ class EventDetector:
         # paths
         working_directory = os.sep.join(file_path.split(os.sep)[:-1])
         self.file_path = file_path
-        feature_path = ".".join(file_path.split(".")[:-1]) + "_FeatureTable.xlsx"
 
         if output is None:
             out_base = ".".join(file_path.split(".")[:-1])
@@ -71,27 +80,71 @@ class EventDetector:
 
         # Variables
         self.file = None
+        self.meta = {}
 
     def run(self, dataset=None,
-            threshold=3, min_size=20, moving_average=25, dask=False,
-            subset=None):
+            threshold=3, min_size=20, moving_average=25, use_dask=False, adjust_for_noise=False,
+            subset=None, output_folder=None):
 
-        data = self._load(dataset_name=dataset, dask=dask, subset=subset)
-        self.vprint(data if dask else data.shape, 2)
+        self.meta["subset"] = subset
+        self.meta["threshold"] = threshold
+        self.meta["min_size"] = min_size
+        self.meta["adjust_for_noise"] = adjust_for_noise
 
-        noise = self.estimate_background(data)
+        # profiling
+        pbar = ProgressBar(minimum=5)
+        pbar.register()
+
+        prof = Profiler()
+        prof.register()
+
+        resources = ResourceProfiler()
+        resources.register()
+
+        # load data
+        data = self._load(dataset_name=dataset, use_dask=use_dask, subset=subset)
+        # self.data = data
+        self.Z, self.X, self.Y = data.shape  # TODO move
+        self.vprint(data if use_dask else data.shape, 2)
+
+        noise = self.estimate_background(data) if adjust_for_noise else 1
 
         event_map, event_properties = self.get_events(data, roi_threshold=threshold, var_estimate=noise,
                                                       min_roi_size=min_size)
+        # self.event_map, self.event_properties = event_map, event_properties
 
-        features = self.calculate_event_features(data, event_map, event_properties, 1, moving_average, threshold)
-        features = self.calculate_event_propagation(data, event_properties, features)
+        meta, meta_lookup_tbl, raw_trace_store, mask_store, _ = self.save_slim_features(event_properties, output_folder)
+        # self.meta, self.meta_lookup_tbl, self.raw_trace_store, self.mask_store, self.footprints = meta, meta_lookup_tbl, raw_trace_store, mask_store, footprints
+        # self.vprint("features extracted", 3)
 
-        # self.event_map = event_map
-        # self.event_properties = event_properties
-        # self.features = features
+        if output_folder is not None:
 
-        return event_map, features
+            # TODO save subset if it exists
+
+            event_map.to_tiledb(f"{output_folder}/event_map.tdb")
+
+            with open(f"{output_folder}/meta.json", 'w') as outfile:
+                json.dump(self.meta, outfile)
+
+            self.vprint("features saved", 3)
+
+        # stop profiling
+        # for r in prof.results:
+        #     self.vprint(r, 2)
+        prof.clear()
+        prof.unregister()
+
+        # for r in resources.results:
+        #     self.vprint(r, 2)
+        resources.clear()
+        resources.unregister()
+
+        self.vprint("Run complete!", 1)
+
+        # return event_map, raw_trace_store, mask_store, footprints, meta
+
+        # features = self.calculate_event_features(data, event_map, event_properties, 1, moving_average, threshold)
+        # features = self.calculate_event_propagation(data, event_properties, features)
 
     def verbosity_print(self, verbosity_level: int):
 
@@ -111,7 +164,7 @@ class EventDetector:
 
         return v_level_print
 
-    def _load(self, dataset_name: str = None, dask: bool = False, subset=None):
+    def _load(self, dataset_name: str = None, use_dask: bool = False, subset=None):
 
         """ loads data from file
 
@@ -127,13 +180,13 @@ class EventDetector:
             file = h5.File(self.file_path, "r")
             assert dataset_name in file, "dataset '{}' does not exist in file".format(dataset_name)
 
-            data = da.from_array(file[dataset_name], chunks='auto') if dask else file[dataset_name]
+            data = da.from_array(file[dataset_name], chunks='auto') if use_dask else file[dataset_name]
 
         elif self.file_path.endswith(".tdb"):
 
             data = tiledb.open(self.file_path)
 
-            if dask:
+            if use_dask:
                 data = da.from_array(data, chunks='auto')
 
         if subset is not None:
@@ -151,13 +204,14 @@ class EventDetector:
 
             data = data[z0:z1, x0:x1, y0:y1]
 
-        if not dask:
+        if not use_dask:
             data = data[:]
 
         return data
 
     def get_events(self, data: np.array, roi_threshold: float, var_estimate: float,
-                   min_roi_size: int = 10, mask_xy: np.array = None) -> (np.array, dict):
+                   min_roi_size: int = 10, mask_xy: np.array = None, smoXY=1,
+                   remove_small_object_framewise=False) -> (np.array, dict):
 
         """ identifies events in data based on threshold
 
@@ -173,9 +227,10 @@ class EventDetector:
         """
 
         # threshold data by significance value
-        active_pixels = np.zeros(data.shape, dtype=np.bool8)
+        active_pixels = da.from_array(np.zeros(data.shape, dtype=np.bool8))
         # self.vprint("Noise threshold: {:.2f}".format(roi_threshold * np.sqrt(var_estimate)), 4)
-        active_pixels[:] = data > roi_threshold * np.sqrt(var_estimate)
+        absolute_threshold = roi_threshold * np.sqrt(var_estimate) if var_estimate is not None else roi_threshold
+        active_pixels[:] = ndfilters.gaussian_filter(data, smoXY) > absolute_threshold
         self.vprint("identified active pixels", 3)
 
         # mask inactive pixels (accelerates subsequent computation)
@@ -184,27 +239,40 @@ class EventDetector:
             self.vprint("masked inactive pixels", 3)
 
         # subsequent analysis hard to parallelize; save in memory
-        if type(active_pixels) == da.core.Array:
-            self.vprint("computing ...", 3)
-            active_pixels = active_pixels.compute()
+        if remove_small_object_framewise:
+            active_pixels = active_pixels.compute() if type(active_pixels) == da.core.Array else active_pixels
 
-        # remove small objects
-        # might be able to be solved with dilation / erosion sequence
-        for cz in range(active_pixels.shape[0]):
-            active_pixels[cz, :, :] = morphology.remove_small_objects(active_pixels[cz, :, :],
-                                                                      min_size=min_roi_size, connectivity=4)
-        self.vprint("removed small objects", 3)
+            # remove small objects
+            for cz in range(active_pixels.shape[0]):
+                active_pixels[cz, :, :] = morphology.remove_small_objects(active_pixels[cz, :, :],
+                                                                          min_size=min_roi_size, connectivity=4)
+            self.vprint("removed small objects", 3)
 
-        # label connected pixels
-        # event_map, num_events = measure.label(active_pixels, return_num=True)
-        event_map = np.zeros(data.shape, dtype=np.uint16)
-        event_map[:], num_events = ndimage.label(active_pixels)
-        self.vprint("labelled connected pixel. #events: {}".format(num_events), 3)
+            # label connected pixels
+            # event_map, num_events = measure.label(active_pixels, return_num=True)
+            event_map = np.zeros(data.shape, dtype=np.uint16)
+            event_map[:], num_events = ndimage.label(active_pixels)
+            self.vprint("labelled connected pixel. #events: {}".format(num_events), 3)
+
+        else:
+
+            # remove small objects
+            struct = ndimage.generate_binary_structure(3, 4)
+
+            active_pixels = ndmorph.binary_opening(active_pixels, structure=struct)
+            active_pixels = ndmorph.binary_closing(active_pixels, structure=struct)
+            self.vprint("removed small objects", 3)
+
+            # label connected pixels
+            event_map = da.from_array(np.zeros(data.shape, dtype=np.uint16))
+            event_map[:], num_events = ndimage.label(active_pixels)
+            self.vprint("labelled connected pixel. #events: {}".format(num_events), 3)
 
         # characterize each event
-        event_properties = measure.regionprops(event_map,
-                                               intensity_image=data)  # TODO should be data  # TODO split if necessary
-        self.vprint("events characterized", 3)
+        event_properties = measure.regionprops(event_map, intensity_image=data, cache=True,
+                                               extra_properties=[self.trace, self.footprint]
+                                               )
+        self.vprint("events collected", 3)
 
         return event_map, event_properties
 
@@ -273,23 +341,24 @@ class EventDetector:
 
             mskST = evt.image  # binary mask of active region
             mskSTSeed = evt.intensity_image  # real values of region (equivalent to dInst .* mskST)
-            dInst = data[:, bbox_x0:bbox_x1, bbox_y0:bbox_y1].compute()  # bounding box intensity; full length Z
+            dInst = data[:, bbox_x0:bbox_x1, bbox_y0:bbox_y1]  # bounding box intensity; full length Z
+            event_map_sel = event_map[:, bbox_x0:bbox_x1, bbox_y0:bbox_y1]
+            xy_footprint = np.max(mskST, axis=0)  # calculate active pixels in XY
+
+            # convert to numpy # TODO avoidable?
+            dInst, xy_footprint, event_map_sel = dask.compute(dInst, xy_footprint, event_map_sel)
 
             dInst_x = dInst.copy()
-            dInst_x[event_map[:, bbox_x0:bbox_x1, bbox_y0:bbox_y1] > 0] = None  # replace all events with None
+            dInst_x[event_map_sel > 0] = None  # replace all events with None
             np.nan_to_num(dInst_x, copy=False, nan=np.nanmedian(dInst_x))
             # TODO fill NaN with sth more sensible (eg. surrounding non-none pixels or interpolate)
 
-            # calculate active pixels in XY
-            xy_footprint = np.max(mskST, axis=0)
-
             # grab all frames with active pixels in the footprint
-            active_frames = np.sum(event_map[:, bbox_x0:bbox_x1, bbox_y0:bbox_y1], axis=(1, 2), where=xy_footprint)
+            active_frames = np.sum(event_map_sel, axis=(1, 2), where=xy_footprint)
             active_frames = active_frames > 0
 
             # > dFF
             raw_curve = np.mean(dInst, axis=(1, 2), where=xy_footprint)
-
 
             charx1 = self.detrend_curve(raw_curve, exclude=active_frames)
 
@@ -365,8 +434,8 @@ class EventDetector:
                 "mask": evt.image,
                 "label": evt.label,
                 "area": evt.area,
-                "centroid": evt.centroid,
-                "inertia_tensor": evt.inertia_tensor,
+                # "centroid": evt.centroid,
+                # "inertia_tensor": evt.inertia_tensor,
                 # "solidity": evt.solidity,
             }
 
@@ -387,10 +456,183 @@ class EventDetector:
 
         return feature_list
 
+    def calculate_slim_features(self, event_properties):
+
+        num_events = len(event_properties)
+        bboxes = np.array([[p.bbox[0], p.bbox[3], p.bbox[1], p.bbox[4], p.bbox[2], p.bbox[5]] for p in event_properties])
+
+        bbox_dim = np.array(
+            [bboxes[:, 1] - bboxes[:, 0],  # z lengths
+             bboxes[:, 3] - bboxes[:, 2],  # x lengths
+             bboxes[:, 5] - bboxes[:, 4]]  # y lengths
+        )
+
+        """ Storage strategy
+            The results of the feature extraction grow quickly in size with the number
+            of frames and events. However, most events only occur in a tiny spatial
+            and temporal footprint. Saving the results in ragged arrays is therefore
+            preferable due to dense storage. The downside is that we need to save two
+            separate pieces of information: the dense data array and an array containing
+            the indices for each event.
+        """
+
+        # create ragged container arrays
+        raw_trace_ind = np.cumsum(bbox_dim[0, :])  # indices for each event trace
+        # raw_trace_store = da.from_array(np.memmap(tempfile.NamedTemporaryFile(), mode="w+",
+        #                                           shape=raw_trace_ind[-1], dtype=np.single))
+        raw_trace_store = da.from_array(np.zeros(shape=raw_trace_ind[-1], dtype=np.single))
+
+        mask_ind = np.cumsum(np.prod(bbox_dim, axis=0))  # indices for each mask
+        # mask_store = da.from_array(np.memmap(tempfile.NamedTemporaryFile(), mode="w+",
+        #                                      shape=mask_ind[-1], dtype=np.byte))
+        mask_store = da.from_array(np.zeros(shape=mask_ind[-1], dtype=np.byte))
+
+        # footprints = da.from_array(np.memmap(tempfile.NamedTemporaryFile(), mode="w+",
+        #                                      shape=(num_events, self.X, self.Y), dtype=np.byte))
+        # footprints = da.from_array(np.zeros(shape=(num_events, self.X, self.Y), dtype=np.byte))
+
+        # storage for smaller data
+        meta_keys = ["raw_trace_ind_0", "raw_trace_ind_1", "mask_ind_0", "mask_ind_1",
+                 "label", "area",  # "centroid", "orientation", "eccentricity",
+                 "bbox_z0", "bbox_z1", "bbox_x0", "bbox_x1", "bbox_y0", "bbox_y1"]
+
+        meta_lookup_tbl = {key: i for i, key in enumerate(meta_keys)}
+        meta = da.from_array(np.zeros((num_events, len(meta_keys)), dtype=np.int32))
+
+        # meta = {key: [] for key in
+        #         ["raw_trace_ind_0", "raw_trace_ind_1", "mask_ind_0", "mask_ind_1",
+        #          "label", "area",  # "centroid", "orientation", "eccentricity",
+        #          "bbox_z0", "bbox_z1", "bbox_x0", "bbox_x1", "bbox_y0", "bbox_y1"]
+        #         }
+
+        # fill ragged containers
+        # for event_i, event_prop in tqdm(enumerate(event_properties), total=len(event_properties)):
+        for event_i, event_prop in tqdm(enumerate(event_properties), total=len(event_properties)):
+
+            meta[event_i, meta_lookup_tbl["label"]] = event_prop.label
+            intensity_image = event_prop.intensity_image
+            mask = event_prop.image
+
+            # bounding box
+            z0, z1, x0, x1, y0, y1 = bboxes[event_i]
+            meta[event_i, meta_lookup_tbl["bbox_z0"]] = z0
+            meta[event_i, meta_lookup_tbl["bbox_z1"]] = z1
+            meta[event_i, meta_lookup_tbl["bbox_x0"]] = x0
+            meta[event_i, meta_lookup_tbl["bbox_x1"]] = x1
+            meta[event_i, meta_lookup_tbl["bbox_y0"]] = y0
+            meta[event_i, meta_lookup_tbl["bbox_y1"]] = y1
+
+            # curve ROI only
+            ind_0 = raw_trace_ind[event_i - 1] if event_i > 0 else 0
+            ind_1 = raw_trace_ind[event_i]
+            masked = da.ma.masked_array(intensity_image, np.invert(mask))
+            raw_trace_store[ind_0:ind_1] = da.ma.filled(np.nanmean(masked, axis=(1, 2)))
+
+            meta[event_i, meta_lookup_tbl["raw_trace_ind_0"]] = ind_0
+            meta[event_i, meta_lookup_tbl["raw_trace_ind_1"]] = ind_1
+
+            # boolean event mask
+            ind_0 = mask_ind[event_i - 1] if event_i > 0 else 0
+            ind_1 = mask_ind[event_i]
+            mask_store[ind_0:ind_1] = mask.flatten()
+
+            meta[event_i, meta_lookup_tbl["mask_ind_0"]] = ind_0
+            meta[event_i, meta_lookup_tbl["mask_ind_1"]] = ind_1
+
+            # save footprint
+            # footprints[event_i, :, :] = np.zeros((self.X, self.Y))
+            # footprints[event_i, x0:x1, y0:y1] = np.min(mask, axis=0)
+
+            # small properties
+            meta[event_i, meta_lookup_tbl["area"]] = event_prop.area
+            # meta["centroid"].append(event_prop.centroid)
+            # meta["orientation"].append(event_prop.orientation)  # not implemented for 3D
+            # meta["eccentricity"].append(event_prop.eccentricity)  # not implemented for 3D
+
+        return meta, meta_lookup_tbl, raw_trace_store, mask_store, None#, footprints
+
+    def save_slim_features(self, event_properties, output_folder):
+
+        num_events = len(event_properties)
+        bboxes = np.array([[p.bbox[0], p.bbox[3], p.bbox[1], p.bbox[4], p.bbox[2], p.bbox[5]] for p in event_properties])
+
+        bbox_dim = np.array(
+            [bboxes[:, 1] - bboxes[:, 0],  # z lengths
+             bboxes[:, 3] - bboxes[:, 2],  # x lengths
+             bboxes[:, 5] - bboxes[:, 4]]  # y lengths
+        )
+
+        """ Storage strategy
+            The results of the feature extraction grow quickly in size with the number
+            of frames and events. However, most events only occur in a tiny spatial
+            and temporal footprint. Saving the results in ragged arrays is therefore
+            preferable due to dense storage. The downside is that we need to save two
+            separate pieces of information: the dense data array and an array containing
+            the indices for each event.
+        """
+
+        # create ragged container arrays
+        raw_trace_ind = np.cumsum(bbox_dim[0, :])  # indices for each event trace
+        self.meta["traces_indices"] = raw_trace_ind.tolist()
+        memmap_trace = np.memmap(f"{output_folder}/trace.mmap", mode="w+", shape=raw_trace_ind[-1], dtype=np.single)
+        raw_trace_store = da.from_array(memmap_trace)
+
+        mask_ind = np.cumsum(np.prod(bbox_dim, axis=0))  # indices for each mask
+        self.meta["mask_indices"] = mask_ind.tolist()
+        memmap_mask = np.memmap(f"{output_folder}/mask.mmap", mode="w+", shape=mask_ind[-1], dtype=np.byte)
+        mask_store = da.from_array(memmap_mask)
+
+        memmap_footprint = np.memmap(f"{output_folder}/footprint.mmap",
+                                     mode="w+", shape=(num_events, self.X, self.Y), dtype=np.byte)
+        footprints = da.from_array(memmap_footprint)
+
+        # storage for smaller data
+        summary_keys = ["raw_trace_ind_0", "raw_trace_ind_1", "mask_ind_0", "mask_ind_1", "label", "area", "bbox_z0", "bbox_z1", "bbox_x0", "bbox_x1", "bbox_y0", "bbox_y1"]
+        self.meta["summary_columns"] = summary_keys
+
+        memmap_summary = np.memmap(f"{output_folder}/meta.mmap", mode="w+", shape=(num_events, len(summary_keys)), dtype=np.int32)
+        summary = da.from_array(memmap_summary)
+
+        # fill ragged containers
+        for event_i, event_prop in tqdm(enumerate(event_properties), total=len(event_properties)):
+
+            mask = event_prop.image
+
+            # indices
+            r_ind_0 = raw_trace_ind[event_i - 1] if event_i > 0 else 0
+            r_ind_1 = raw_trace_ind[event_i]
+
+            m_ind_0 = mask_ind[event_i - 1] if event_i > 0 else 0
+            m_ind_1 = mask_ind[event_i]
+
+            z0, z1, x0, x1, y0, y1 = bboxes[event_i]
+
+            # bounding box
+            summary[event_i, :] = [r_ind_0, r_ind_1, m_ind_0, m_ind_1,
+                                event_prop.label, event_prop.area,
+                                z0, z1, x0, x1, y0, y1]
+
+            # curve ROI only
+            raw_trace_store[r_ind_0:r_ind_1] = event_prop.trace
+
+            # boolean event mask
+            mask_store[m_ind_0:m_ind_1] = mask.flatten()
+
+            # save footprint
+            footprints[event_i, :, :] = np.zeros((self.X, self.Y))
+            footprints[event_i, x0:x1, y0:y1] = np.min(mask, axis=0)
+
+            # small properties
+            # meta["centroid"].append(event_prop.centroid)
+
+        return summary, raw_trace_store, mask_store, footprints
+
     def calculate_event_propagation(self, data, event_properties: dict, feature_list,
                                     spatial_resolution: float = 1, event_rec=None, north_x=0, north_y=1,
                                     propagation_threshold_min=0.2, propagation_threshold_max=0.8,
                                     propagation_threshold_step=0.1):
+
+        # TODO this function is currently not working well dask. Fix!
 
         """
 
@@ -428,27 +670,42 @@ class EventDetector:
 
         for i, evt in enumerate(event_properties):
 
-            if i not in features.keys():
+            if i not in feature_list.keys():
                 continue
 
             # get bounding box
             bbox_z0, bbox_x0, bbox_y0, bbox_z1, bbox_x1, bbox_y1 = evt.bbox  # bounding box coordinates
             dInst = data[bbox_z0:bbox_z1, bbox_x0:bbox_x1, bbox_y0:bbox_y1]  # bounding box intensity
             mskST = evt.image  # binary mask of active region
+
+            dInst, mskST = dask.compute(dInst, mskST)
+
             bbZ, bbX, bbY = mskST.shape
 
+            """ currently not necessary until evtRec is implemented
             voli0 = mskST  # TODO stupid variable names
-            volr0 = np.ones(
-                voli0.shape)  # TODO would be something useful if more of the AquA algorithm were implemented
+            volr0 = np.ones(voli0.shape)  # TODO would be something useful if complete AquA algorithm were implemented
 
             # prepare active pixels
             volr0[voli0 == 0] = 0  # TODO this is useless; could define volr0 differently
             volr0[volr0 < min(thr_range)] = 0  # exclude pixels below lowest threshold
+            
             sigMapXY = np.sum(volr0 >= min(thr_range), axis=0)
             nPix = np.sum(sigMapXY > 0)
+            """
+            nPix = np.sum(mskST)
 
             # mask for directions relative to 1st frame centroid
-            centroid_x0, centroid_y0 = np.round(measure.centroid(mskST[0, :, :])).astype(int)
+            try:
+                centroid_x0, centroid_y0 = np.round(measure.centroid(mskST[0, :, :])).astype(int)
+            except:
+
+                print(type(mskST))
+                print(mskST)
+
+                time.sleep(1)
+                traceback.print_exc()
+
 
             msk = np.zeros((bbX, bbY, 4))
             msk[:centroid_x0, :, 0] = 1  # north
@@ -555,7 +812,7 @@ class EventDetector:
     def _get_curve_statistics(self, curve: np.array, seconds_per_frame: float, prominence: float,
                               curve_label: str = None, relative_height: list = (0.1, 0.5, 0.9),
                               enforce_single_peak: bool = True, max_iterations: int = 100,
-                              ignore_tau=False):
+                              ignore_tau=False, min_fit_length=5):
 
         """ calculate characteristic of fluorescence trace
 
@@ -636,7 +893,7 @@ class EventDetector:
             curve_stat["width_{}".format(thr * 100)] = (peak_right_ips - peak_left_ips) * seconds_per_frame
 
         # > fit exponential decay
-        if ~ ignore_tau:
+        if ~ ignore_tau or (peak_right_base - peak_x) < min_fit_length:
             Y = curve[peak_x:peak_right_base]
             X = range(0, peak_right_base - peak_x)
 
@@ -662,6 +919,23 @@ class EventDetector:
                 curve_stat["decayTau"] = None
 
         return curve_stat
+
+    @staticmethod
+    def trace(mask, intensity):
+        masked = da.ma.masked_array(intensity, np.invert(mask))
+        return da.ma.filled(np.nanmean(masked, axis=(1, 2)))
+
+    @staticmethod
+    def footprint(mask):
+        return np.min(mask, axis=0)
+
+    @staticmethod
+    def get_start(arr, positions):
+        return positions[0]
+
+    @staticmethod
+    def get_stop(arr, positions):
+        return positions[-1]
 
     def subtract_background(self, data: np.array, trial_length, window, var_estimate=None, mask_xy=None):
 
@@ -814,7 +1088,7 @@ class EventDetector:
 
         T = len(curve)
         t0 = max(bbox_z0 - 1, 0)
-        t1 = min(bbox_z1 + 1, T-1)
+        t1 = min(bbox_z1 + 1, T - 1)
 
         # find local minimum between prior/next event and the current event
         try:
@@ -826,7 +1100,7 @@ class EventDetector:
                 i0 = t0 - np.argmax(event_timings[:t0:]) - 1  # closest event prior to current
                 t0_min = i0 + np.argmin(curve[i0:bbox_z0]) - 1
 
-            if bbox_z1 > T-1:  # bbox ends with last frame
+            if bbox_z1 > T - 1:  # bbox ends with last frame
                 t1_min = bbox_z1
             elif np.sum(event_timings[t1:]) < 1:  # no other events post event
                 t1_min = T
@@ -917,6 +1191,43 @@ class EventDetector:
                     lmVal.append(mskSTSeed[lmax])
 
             return lmLoc, lmVal
+
+
+def export_to_tdb(path, loc=None, out=None):
+    if out is None:
+        out = path + "_{}.tdb".format(loc)
+        print("Output: ", out)
+
+    if path.endswith(".h5"):
+        assert loc is not None, "please provide a dataset name 'loc"
+
+        with h5.File(path, "r") as file:
+            data = file[loc]
+
+            data = da.from_array(data)
+            data.to_tiledb(out)
+
+def print_array_size(dimension, dtype):
+
+    A = np.zeros(dimension, dtype=dtype)
+    print("nBytes: {} ... {}GB ... max: {}-{}".format(A.nbytes, A.nbytes/1e9, np.iinfo(dtype).min, np.iinfo(dtype).max))
+
+def p(arr1, arr2, nf=None):
+    if nf is None:
+        nf = [0, int(arr1.shape[0] / 2), -1]
+
+    fig, ax = plt.subplots(2, 1, figsize=(20, 10))
+    ax0, ax1 = list(ax.flatten())
+
+    spacer = np.ones((600, 1))
+
+    im0 = [arr1[n, :, :] for n in nf]
+    im1 = [arr2[n, :, :] for n in nf]
+
+    ax0.imshow(np.concatenate(im0, axis=1))
+    ax1.imshow(np.concatenate(im1, axis=1))
+
+    plt.show()
 
 
 class Legacy:
@@ -1355,23 +1666,30 @@ if __name__ == "__main__":
 
     t0 = time.time()
 
-    use_small = True
-    subset = None  # [0, None, None, None, None, None]
+    use_small = False
     use_dask = True
+    use_subset = False
+
+    subset = None if use_small or not use_subset else [0, 250, None, None, None, None]
+    print("subset: ", subset)
 
     # file path
     directory = "C:/Users/janrei/Desktop/"
-    file = "22A5x4-1.zip.h5" if use_small else "22A5x4-2.zip.h5.tdb"
+    file = "22A5x4-1.zip.h5" if use_small else "22A5x4-2.subtr.reconstr.mc.tdb"  # "22A5x4-2.zip.h5.tdb"
     loc = "/dff/neu" if use_small else "/dff/ast/"
     path = directory + file
 
     # output = 'C:/Users/janrei/Desktop/22A5x4-2.zip.h5.tdb'
 
     ed = EventDetector(path, verbosity=10)
-    event_map, features = ed.run(dataset=loc, threshold=3,
-                                         dask=use_dask, subset=subset)
+    res = ed.run(dataset=loc, threshold=0.1, use_dask=use_dask, subset=subset,
+                 output_folder="C:/Users/janrei/Desktop/22A5x4-2.subtr.reconstr.res/"
+                 )
 
-    print("{:.1f}s".format(time.time() - t0))
+    dt = time.time() - t0
+    print("{:.1f} min".format(dt / 60) if dt > 60 else "{:.1f} s".format(dt))
+
+    sys.exit(2)
 
     # # event_map = event_map > 1
     # spacer = np.ones((600, 1))
@@ -1384,6 +1702,56 @@ if __name__ == "__main__":
 
     print("Done!")
 
+    ep = ed.event_properties
+    ep[0].area
+
+
     # print("Saving")
     # evt_dask = da.from_array(event_map)
     # evt_dask.to_tiledb(path+"evt_map.tdb")
+
+    smoXY = 1
+    thr = 1
+
+    ed = EventDetector(path, verbosity=10)
+    data = ed._load(dataset_name=loc, use_dask=True, subset=subset)
+    p(data, data)
+    noise = ed.estimate_background(data).compute()
+    print("Noise: {} [{}]".format(noise, thr * noise))
+
+    active_pixels = ndfilters.gaussian_filter(data, smoXY) > thr  # * noise
+    ap2 = active_pixels.copy()
+    struct = ndimage.generate_binary_structure(3, 4)
+    print(struct.shape, "\n", struct)
+    ap2 = ndmorph.binary_opening(ap2, structure=struct)
+    ap2 = ndmorph.binary_closing(ap2, structure=struct)
+    p(active_pixels, ap2)
+
+    tf.imsave(path + ".del.tiff", data)
+    tf.imsave(path + ".del1.tiff", active_pixels)
+    tf.imsave(path + ".del2.tiff", ap2)
+    data_masked = data.copy()
+    data_masked[ap2 > 0] = 0
+    tf.imsave(path + ".del3.tiff", data_masked)
+
+
+    # ragged array
+    num_events = len(event_properties)
+    bboxes = np.array([[p.bbox[0], p.bbox[3], p.bbox[1], p.bbox[4], p.bbox[2], p.bbox[5]] for p in event_properties])
+
+
+    elength = bboxes[:, 1]-bboxes[:, 0]
+    eindices = np.cumsum(elength)  # indices for each event trace
+    raw_traces = da.from_array(np.zeros(np.sum(elength), dtype=np.single))
+
+    for i, p in enumerate(event_properties):
+
+        i0 = eindices[i-1] if i > 0 else 0
+        i1 = eindices[i]
+
+        masked = da.ma.masked_array(p.intensity_image, p.intensity_image == 0)
+        raw_traces[i0:i1] = da.ma.filled(np.nanmean(masked, axis=(1, 2)))
+
+    raw_traces = raw_traces.compute()
+    print(type(raw_traces))
+
