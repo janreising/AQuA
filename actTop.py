@@ -111,6 +111,8 @@ class EventDetector:
 
         event_map, event_properties = self.get_events(data, roi_threshold=threshold, var_estimate=noise,
                                                       min_roi_size=min_size)
+
+        return event_map, event_properties
         # self.event_map, self.event_properties = event_map, event_properties
 
         meta, meta_lookup_tbl, raw_trace_store, mask_store, _ = self.save_slim_features(event_properties, output_folder)
@@ -582,15 +584,20 @@ class EventDetector:
         memmap_mask = np.memmap(f"{output_folder}/mask.mmap", mode="w+", shape=mask_ind[-1], dtype=np.byte)
         mask_store = da.from_array(memmap_mask)
 
-        memmap_footprint = np.memmap(f"{output_folder}/footprint.mmap",
-                                     mode="w+", shape=(num_events, self.X, self.Y), dtype=np.byte)
-        footprints = da.from_array(memmap_footprint)
+        # memmap_footprint = np.memmap(f"{output_folder}/footprint.mmap",
+        #                              mode="w+", shape=(num_events, self.X, self.Y), dtype=np.byte)
+        # footprints = da.from_array(memmap_footprint)
+
+        ft_path = f"{output_folder}/footprint.tdb"
+        footprints = da.zeros(shape=(num_events, self.X, self.Y), dtype=np.byte)
+        footprints.to_tiledb(ft_path)
+        footprints = footprints.store(tiledb.open(ft_path), compute=False, return_stored=True)
 
         # storage for smaller data
         summary_keys = ["raw_trace_ind_0", "raw_trace_ind_1", "mask_ind_0", "mask_ind_1", "label", "area", "bbox_z0", "bbox_z1", "bbox_x0", "bbox_x1", "bbox_y0", "bbox_y1"]
         self.meta["summary_columns"] = summary_keys
 
-        memmap_summary = np.memmap(f"{output_folder}/meta.mmap", mode="w+", shape=(num_events, len(summary_keys)), dtype=np.int32)
+        memmap_summary = np.memmap(f"{output_folder}/summary.mmap", mode="w+", shape=(num_events, len(summary_keys)), dtype=np.int32)
         summary = da.from_array(memmap_summary)
 
         # fill ragged containers
@@ -1755,3 +1762,4 @@ if __name__ == "__main__":
     raw_traces = raw_traces.compute()
     print(type(raw_traces))
 
+    # multiprocessing
