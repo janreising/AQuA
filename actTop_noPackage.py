@@ -74,7 +74,7 @@ def run(meta, file_path, dataset=None, threshold=3, min_size=20, moving_average=
     print("Collecting garbage")
     del data
     gc.collect()
-    time.sleep(10)
+    time.sleep(2)
 
     print("Calculating features")
     return event_map
@@ -305,8 +305,8 @@ if __name__ == "__main__":
     print("subset: ", subset)
 
     # file path
-    directory = "C:/Users/janrei/Desktop/"
-    file = "22A5x4-1.zip.h5" if use_small else "22A5x4-2.subtr.reconstr.mc.tdb"  # "22A5x4-2.zip.h5.tdb"
+    directory = "/home/janrei1@ad.cmm.se/Desktop/"
+    file = "22A5x4-1.zip.h5" if use_small else "22A5x4-2-subtracted-mc.zip.h5.reconstructed_.h5.tdb"  # "22A5x4-2.zip.h5.tdb"
     loc = "/dff/neu" if use_small else "/dff/ast/"
     path = directory + file
 
@@ -315,8 +315,43 @@ if __name__ == "__main__":
 
     res = run(meta, path,
         dataset=loc, threshold=0.1, use_dask=use_dask, subset=subset,
-        output_folder="C:/Users/janrei/Desktop/22A5x4-2.subtr.reconstr.res/"
+        output_folder="/home/janrei1@ad.cmm.se/Desktop/22A5x4-2.subtr.reconstr.res/"
         )
 
     dt = time.time() - t0
     print("{:.1f} min".format(dt / 60) if dt > 60 else "{:.1f} s".format(dt))
+
+
+    # split tm
+    tm = get_time_map(em)
+
+
+    num_frames, num_rois = tm.shape
+
+    split_size = int(num_frames / (mp.cpu_count() * 25))
+    splits = np.arange(0, num_frames, split_size)
+
+    last_max_roi = 0
+    c = []
+    for split in splits:
+
+        start, stop = split, split+split_size
+
+        if stop >= num_frames:
+            c.append([start, num_frames, last_max_roi, num_rois])
+            continue
+
+        last_frame = np.where(tm[stop, :] == 1)[0]
+        max_roi = np.max(last_frame)
+
+        zs, _ = np.where(tm[:, last_frame[1:]] == 1)
+        max_z = np.max(zs)
+
+        stop = max_z
+
+        c.append([start, max_z, last_max_roi+1, max_roi])
+        last_max_roi = max_roi
+
+    # TODO refactor func to accept chunks of tasks instead of single tasks
+
+
