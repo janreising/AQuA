@@ -7,6 +7,7 @@ import time
 from itertools import product
 import tempfile
 from tqdm import tqdm
+import gc
 
 import scipy.ndimage as ndimage
 from scipy import signal
@@ -21,8 +22,12 @@ from dask_image import ndmorph, ndfilters, ndmeasure
 
 import matplotlib.pyplot as plt
 
-import multiprocessing as mp
-from multiprocessing import shared_memory
+# import multiprocessing as mp
+# from multiprocessing import shared_memory
+
+import multiprocess as mp
+from multiprocess import shared_memory
+from itertools import repeat
 
 import sys
 import traceback
@@ -32,10 +37,7 @@ import dask
 
 import json
 
-
 # from pathos.multiprocessing import ProcessingPool as pPool
-
-
 def analyze(event, arr):
     arr[event.label] = event.label
 
@@ -95,11 +97,11 @@ class EventDetector:
         pbar = ProgressBar(minimum=5)
         pbar.register()
 
-        prof = Profiler()
-        prof.register()
-
-        resources = ResourceProfiler()
-        resources.register()
+        # prof = Profiler()
+        # prof.register()
+        #
+        # resources = ResourceProfiler()
+        # resources.register()
 
         # load data
         data = self._load(dataset_name=dataset, use_dask=use_dask, subset=subset)
@@ -109,37 +111,57 @@ class EventDetector:
 
         noise = self.estimate_background(data) if adjust_for_noise else 1
 
-        event_map, event_properties = self.get_events(data, roi_threshold=threshold, var_estimate=noise,
-                                                      min_roi_size=min_size)
+        # event_map, event_properties = self.get_events(data, roi_threshold=threshold, var_estimate=noise,
+        #                                               min_roi_size=min_size)
 
-        return event_map, event_properties
+        event_map = self.get_events(data, roi_threshold=threshold, var_estimate=noise, min_roi_size=min_size)
+
+        if output_folder is not None:
+            # np.save(f"{output_folder}/event_map.npy", event_map)
+            da.to_npy_stack(f"{output_folder}/event_map/", event_map, axis=0)
+
+        # event_map = dask.compute(event_map)  # TODO probably not the right place to do this
+
+        # getting rid of extra variables
+        self.vprint("collecting garbage", 2)
+        del data
+        del noise
+        gc.collect()
+        time.sleep(10)
+
+        self.vprint("calculating features", 2)
+        events = self.custom_slim_features(event_map)
+
+        # return event_map, data
+
+        # return event_map, event_properties
         # self.event_map, self.event_properties = event_map, event_properties
 
-        meta, meta_lookup_tbl, raw_trace_store, mask_store, _ = self.save_slim_features(event_properties, output_folder)
+        # meta, meta_lookup_tbl, raw_trace_store, mask_store, _ = self.dummy_slim_features(event_properties, output_folder)
         # self.meta, self.meta_lookup_tbl, self.raw_trace_store, self.mask_store, self.footprints = meta, meta_lookup_tbl, raw_trace_store, mask_store, footprints
         # self.vprint("features extracted", 3)
 
+        # return None
+
         if output_folder is not None:
 
-            # TODO save subset if it exists
-
-            event_map.to_tiledb(f"{output_folder}/event_map.tdb")
+            np.save(f"{output_folder}/events.npy", events)
 
             with open(f"{output_folder}/meta.json", 'w') as outfile:
                 json.dump(self.meta, outfile)
 
             self.vprint("features saved", 3)
 
-        # stop profiling
-        # for r in prof.results:
-        #     self.vprint(r, 2)
-        prof.clear()
-        prof.unregister()
-
-        # for r in resources.results:
-        #     self.vprint(r, 2)
-        resources.clear()
-        resources.unregister()
+        # # stop profiling
+        # # for r in prof.results:
+        # #     self.vprint(r, 2)
+        # prof.clear()
+        # prof.unregister()
+        #
+        # # for r in resources.results:
+        # #     self.vprint(r, 2)
+        # resources.clear()
+        # resources.unregister()
 
         self.vprint("Run complete!", 1)
 
@@ -266,17 +288,21 @@ class EventDetector:
             self.vprint("removed small objects", 3)
 
             # label connected pixels
-            event_map = da.from_array(np.zeros(data.shape, dtype=np.uint16))
+            event_map = da.from_array(np.zeros(data.shape, dtype=np.uintc))
             event_map[:], num_events = ndimage.label(active_pixels)
             self.vprint("labelled connected pixel. #events: {}".format(num_events), 3)
 
-        # characterize each event
-        event_properties = measure.regionprops(event_map, intensity_image=data, cache=True,
-                                               extra_properties=[self.trace, self.footprint]
-                                               )
-        self.vprint("events collected", 3)
 
-        return event_map, event_properties
+        del active_pixels   # TODO does this actually help?
+
+        # characterize each event
+
+        # event_properties = measure.regionprops(event_map, intensity_image=data, cache=True,
+        #                                        extra_properties=[self.trace, self.footprint]
+        #                                        )
+        # self.vprint("events collected", 3)
+
+        return event_map#, event_properties
 
     def calculate_event_features(self, data: np.array, event_map: np.array, event_properties: dict,
                                  seconds_per_frame: float, smoothing_window: int, prominence: float,
@@ -508,7 +534,6 @@ class EventDetector:
         #         }
 
         # fill ragged containers
-        # for event_i, event_prop in tqdm(enumerate(event_properties), total=len(event_properties)):
         for event_i, event_prop in tqdm(enumerate(event_properties), total=len(event_properties)):
 
             meta[event_i, meta_lookup_tbl["label"]] = event_prop.label
@@ -633,6 +658,67 @@ class EventDetector:
             # meta["centroid"].append(event_prop.centroid)
 
         return summary, raw_trace_store, mask_store, footprints
+
+    def custom_slim_features(self, event_map, parallel=True):
+
+        # if parallel:
+
+        # sh_data = shared_memory.SharedMemory(create=True, size=data.nbytes)
+        # shn_data = np.ndarray(data.shape, dtype=data.dtype, buffer=sh_data.buf)
+        # shn_data[:] = data
+
+        sh_em = shared_memory.SharedMemory(create=True, size=event_map.nbytes)
+        shn_em = np.ndarray(event_map.shape, dtype=event_map.dtype, buffer=sh_em.buf)
+        shn_em[:] = event_map
+
+        num_events = np.max(shn_em)
+
+        with mp.Pool(mp.cpu_count()) as p:
+
+            # TODO provide chunks; less overhead loading
+            arguments = zip(range(1, num_events), repeat(event_map.shape), repeat(sh_em.name), repeat(self.file_path))
+            num_task = num_events-1
+
+            R = []
+            with tqdm(total=num_task) as pbar:
+
+                for r in p.starmap(func, arguments):
+                    R.append(r)
+                    pbar.update()
+
+        # sh_data.close()
+        # sh_data.unlink()
+
+        sh_em.close()
+        sh_em.unlink()
+
+        return R
+
+        # else:
+
+        # areas, traces, footprints = [], [], []
+        # for i in tqdm(range(1, num_events)):
+        #
+        #     z, x, y = np.where(event_map == i)
+        #     z0, z1 = np.min(z), np.max(z)
+        #     x0, x1 = np.min(x), np.max(x)
+        #     y0, y1 = np.min(y), np.max(y)
+        #
+        #     dz, dx, dy = z1-z0, x1-x0, y1-y0
+        #     z, x, y = z-z0, x-x0, y-y0
+        #
+        #     mask = np.ones((dz+1, dx+1, dy+1), dtype=np.bool_)
+        #     mask[(z, x, y)] = 0
+        #
+        #     signal = data[z0:z1+1, x0:x1+1, y0:y1+1]  # TODO weird that i need +1 here
+        #     msignal = np.ma.masked_array(signal, mask)
+        #
+        #     # get number of pixels
+        #     areas.append(len(z))
+        #     traces.append(np.ma.filled(np.nanmean(msignal, axis=(1, 2))))
+        #     footprints.append(np.min(mask, axis=0))
+        #
+        #     return areas, traces, footprints
 
     def calculate_event_propagation(self, data, event_properties: dict, feature_list,
                                     spatial_resolution: float = 1, event_rec=None, north_x=0, north_y=1,
@@ -1643,6 +1729,51 @@ class Legacy:
         return np.power(dist_squared_median, 0.5)
 
 
+def func(event_id, shape, sh_event_name, file_path):
+    from multiprocess import shared_memory
+    import numpy as np
+    import tiledb
+
+    res = {}
+    res["label"] = event_id
+
+    em = shared_memory.SharedMemory(name=sh_event_name)
+    em_np = np.ndarray(shape, dtype='uint16', buffer=em.buf)
+
+    # d = shared_memory.SharedMemory(name=sh_data_name)
+    # d_np = np.ndarray(shape, dtype='float32', buffer=d.buf)
+
+    data = tiledb.open(file_path)
+
+    z, x, y = np.where(em_np == event_id)
+    z0, z1 = np.min(z), np.max(z)
+    x0, x1 = np.min(x), np.max(x)
+    y0, y1 = np.min(y), np.max(y)
+
+    res["area"] = len(z)
+    res["bbox"] = ((z0, z1), (x0, x1), (y0, y1))
+
+    dz, dx, dy = z1 - z0, x1 - x0, y1 - y0
+    z, x, y = z - z0, x - x0, y - y0
+    res["dim"] = (dz + 1, dx + 1, dy + 1)
+    res["pix_num"] = int((dz+1)*(dx+1)*(dy+1))
+
+    mask = np.ones((dz + 1, dx + 1, dy + 1), dtype=np.bool8)
+    mask[(z, x, y)] = 0
+    res["mask"] = mask.flatten()
+    res["footprint"] = np.invert(np.min(mask, axis=0)).flatten()
+
+    signal = data[z0:z1 + 1, x0:x1 + 1, y0:y1 + 1]  # TODO weird that i need +1 here
+    msignal = np.ma.masked_array(signal, mask)
+    res["trace"] = np.ma.filled(np.nanmean(msignal, axis=(1, 2)))
+
+    # for mem in [em, d]:
+    for mem in [em]:
+        mem.close()
+        mem.unlink()
+
+    return res
+
 if __name__ == "__main__":
     """
     ## arguments
@@ -1677,7 +1808,7 @@ if __name__ == "__main__":
     use_dask = True
     use_subset = False
 
-    subset = None if use_small or not use_subset else [0, 250, None, None, None, None]
+    subset = None if use_small or not use_subset else [0, 100, None, None, None, None]
     print("subset: ", subset)
 
     # file path
@@ -1689,7 +1820,7 @@ if __name__ == "__main__":
     # output = 'C:/Users/janrei/Desktop/22A5x4-2.zip.h5.tdb'
 
     ed = EventDetector(path, verbosity=10)
-    res = ed.run(dataset=loc, threshold=0.1, use_dask=use_dask, subset=subset,
+    ed.run(dataset=loc, threshold=0.1, use_dask=use_dask, subset=subset,
                  output_folder="C:/Users/janrei/Desktop/22A5x4-2.subtr.reconstr.res/"
                  )
 
@@ -1763,3 +1894,9 @@ if __name__ == "__main__":
     print(type(raw_traces))
 
     # multiprocessing
+    def func(event):
+        area = event["area"]
+        print(area)
+
+    with mp.Pool(mp.cpu_count()) as p:
+        p.map(func, ep[:24])
