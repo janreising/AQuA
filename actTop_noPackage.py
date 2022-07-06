@@ -73,15 +73,13 @@ def run(meta, file_path, dataset=None, threshold=3, min_size=20, moving_average=
         event_map = da.from_tiledb(event_map_path)
 
     # getting rid of extra variables
-    print("Collecting garbage")
     del data
     gc.collect()
-    time.sleep(2)
 
     print("Calculating time map")
     time_map_path = f"{output_folder}time_map.npy"
     if not os.path.isfile(time_map_path):
-        time_map = get_time_map(event_map.compute())
+        time_map = get_time_map(event_map)
 
         print("Saving event map to: ", time_map_path)
         if output_folder is not None:
@@ -93,6 +91,8 @@ def run(meta, file_path, dataset=None, threshold=3, min_size=20, moving_average=
     del event_map
     gc.collect()
 
+    return None
+
     print("Calculating features")
     custom_slim_features(time_map, file_path, event_map_path)
 
@@ -100,7 +100,6 @@ def run(meta, file_path, dataset=None, threshold=3, min_size=20, moving_average=
     if output_folder is not None:
         with open(f"{output_folder}/meta.json", 'w') as outfile:
             json.dump(meta, outfile)
-
 
 def estimate_background(data: np.array, mask_xy: np.array = None) -> float:
 
@@ -167,7 +166,6 @@ def _load(file_path, dataset_name: str = None, use_dask: bool = False, subset=No
 
     return data
 
-
 def get_events(data: np.array, roi_threshold: float, var_estimate: float,
                min_roi_size: int = 10, mask_xy: np.array = None, smoXY=1,
                remove_small_object_framewise=False) -> (np.array, dict):
@@ -223,8 +221,7 @@ def get_events(data: np.array, roi_threshold: float, var_estimate: float,
 
     return event_map
 
-
-def custom_slim_features(time_map, data_path, event_path):
+def custom_slim_features(time_map_path, data_path, event_path):
 
         # print(event_map)
         # sh_em = shared_memory.SharedMemory(create=True, size=event_map.nbytes)
@@ -234,6 +231,9 @@ def custom_slim_features(time_map, data_path, event_path):
         # num_events = np.max(shn_em)
 
         # create chunks
+
+        time_map = np.load(time_map_path)
+
         print("\t collecting arguments")
         num_frames, num_rois = time_map.shape
 
@@ -267,6 +267,7 @@ def custom_slim_features(time_map, data_path, event_path):
             os.mkdir(out_path)
 
         arguments = zip(c, repeat(data_path), repeat(event_path), repeat(out_path))
+        print("mp.cpu_count(): ", mp.cpu_count())
 
         with mp.Pool(mp.cpu_count()) as p:
 
@@ -277,7 +278,6 @@ def custom_slim_features(time_map, data_path, event_path):
         # sh_em.unlink()
 
         return R
-
 
 def func(event_id, shape, sh_event_name, file_path):
 
@@ -333,6 +333,7 @@ def func_multi(task, data_path, event_path, out_path):
 
     t0, t1, r0, r1, task_num = task
     res_path = f"{out_path}events{r0}-{r1}.npy"
+    print("Working on {}".format(res_path))
 
     if os.path.isfile(res_path):
         return 2
@@ -384,11 +385,27 @@ def func_multi(task, data_path, event_path, out_path):
 
     return 1
 
-def get_time_map(event_map):
+def get_time_map(event_map, chunk=200):
 
     time_map = np.zeros((event_map.shape[0], np.max(event_map) + 1), dtype=np.bool_)
-    for z in tqdm(range(event_map.shape[0])):
-        time_map[z, np.unique(event_map[z, :, :])] = 1
+
+    Z = event_map.shape[0]
+    if type(event_map) == da.core.Array:
+
+        print("Recognized dask array. Loading in chunks ...")
+        for c in tqdm(range(0, Z, chunk)):
+
+            cmax = min(Z, c+chunk)
+            event_map_memory = event_map[c:cmax, :, :].compute()
+
+            for z in range(c, cmax):
+                time_map[z, np.unique(event_map_memory[z-c, :, :])] = 1
+
+    else:
+
+        print("Assuming event_map is in RAM ... ")
+        for z in tqdm(range(Z)):
+            time_map[z, np.unique(event_map[z, :, :])] = 1
 
     return time_map
 
@@ -418,44 +435,17 @@ if __name__ == "__main__":
         output_folder="/home/janrei1@ad.cmm.se/Desktop/22A5x4-2.subtr.reconstr.res/"
         )
 
+    print("Calculating features")
+
+    time_map_path = "/home/janrei1@ad.cmm.se/Desktop/22A5x4-2.subtr.reconstr.res/time_map.npy"
+    event_map_path = "/home/janrei1@ad.cmm.se/Desktop/22A5x4-2.subtr.reconstr.res/event_map/"
+    custom_slim_features(time_map_path, path, event_map_path)
+
+    print("Saving")
+    output_folder="/home/janrei1@ad.cmm.se/Desktop/22A5x4-2.subtr.reconstr.res/"
+    if output_folder is not None:
+        with open(f"{output_folder}/meta.json", 'w') as outfile:
+            json.dump(meta, outfile)
+
     dt = time.time() - t0
     print("{:.1f} min".format(dt / 60) if dt > 60 else "{:.1f} s".format(dt))
-
-    sys.exit(2)
-
-    event_map_path = "/home/janrei1@ad.cmm.se/Desktop/22A5x4-2.subtr.reconstr.res/event_map/"
-    res = func_multi((1, 100, 1, 45), path, event_map_path)
-
-    # split tm
-    time_map = get_time_map(em)
-
-
-    num_frames, num_rois = time_map.shape
-
-    split_size = int(num_frames / (mp.cpu_count() * 25))
-    splits = np.arange(0, num_frames, split_size)
-
-    last_max_roi = 0
-    c = []
-    for split in splits:
-
-        start, stop = split, split+split_size
-
-        if stop >= num_frames:
-            c.append([start, num_frames, last_max_roi, num_rois])
-            continue
-
-        last_frame = np.where(time_map[stop, :] == 1)[0]
-        max_roi = np.max(last_frame)
-
-        zs, _ = np.where(time_map[:, last_frame[1:]] == 1)
-        max_z = np.max(zs)
-
-        stop = max_z
-
-        c.append([start, max_z, last_max_roi+1, max_roi])
-        last_max_roi = max_roi
-
-    # TODO refactor func to accept chunks of tasks instead of single tasks
-
-
