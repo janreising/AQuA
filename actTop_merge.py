@@ -1960,6 +1960,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input", type=str, default=None)
     parser.add_argument("-l", "--loc", type=str, default="inf/ast")
+    parser.add_argument("-t", "--threshold", type=int, default=4)
 
     args = parser.parse_args()
 
@@ -1970,7 +1971,7 @@ if __name__ == "__main__":
 
     # run code
     ed = EventDetector(args.input, verbosity=10)
-    ed.run(dataset=args.loc, threshold=4, use_dask=use_dask, subset=subset)
+    ed.run(dataset=args.loc, threshold=args.threshold, use_dask=use_dask, subset=subset)
 
     dt = time.time() - t0
     print("{:.1f} min".format(dt / 60) if dt > 60 else "{:.1f} s".format(dt))
