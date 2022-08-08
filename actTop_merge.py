@@ -1955,141 +1955,22 @@ def func(event_id, shape, sh_event_name, file_path):
     return res
 
 if __name__ == "__main__":
-    """
+
     ## arguments
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input", type=str, default=None)
-    parser.add_argument("-o", "--output", type=str, default=None)
-    parser.add_argument("--indices", "--ind", type=int, nargs=2, default=None)
-    parser.add_argument("--inMemory", "--mem", action='store_true')
-    parser.add_argument("-v", "--verbose", type=int, default=0)
-
-    parser.add_argument("--rl", "--raw_location", type=str, default="cnmfe/ast")
-    parser.add_argument("--dl", "--df_location", type=str, default="dff/ast")
-
-    parser.add_argument("--frameRate", type=float, default=1.0, help="frame rate images/s")
-    parser.add_argument("--spatialRes", type=float, default=0.5, help="spatial resolution µm/px")
-    # parser.add_argument("--varEst", type=float, default=0.02, help="Estimated noise variance")
-
-    parser.add_argument("--minSize", type=int, default=10, help="minimum ROI size")
-    parser.add_argument("--smoXY", type=int, default=1, help="spatial smoothing level")
-    parser.add_argument("--thrARScl", type=int, default=1, help="active voxel threshold")
+    parser.add_argument("-l", "--loc", type=str, default="inf/ast")
 
     args = parser.parse_args()
 
-    # Create AqUA object
-    c = ActTop(args)
-    # c.run()
-    """
+    use_dask = True
+    subset = None
 
     t0 = time.time()
 
-    use_small = False
-    use_dask = True
-    use_subset = False
-
-    subset = None if use_small or not use_subset else [0, 1000, None, None, None, None]
-    print("subset: ", subset)
-
-    # file path
-    directory = "/home/janrei1@ad.cmm.se/Desktop/del/"
-    # file = "22A5x4-1.zip.h5" if use_small else "22A5x4-2-subtracted-mc.zip.h5.reconstructed_.h5.tdb"  # "22A5x4-2.zip.h5.tdb"
-    file = "22A6x1-2.delta"
-    loc = "/dff/neu" if use_small else "/dff/ast/"
-    path = directory + file
-
     # run code
-    meta = {}
-
-    ed = EventDetector(path, verbosity=10)
-    ed.run(dataset=loc, threshold=4, use_dask=use_dask, subset=subset,
-                 # output_folder="C:/Users/janrei/Desktop/22A5x4-2.subtr.reconstr.res/"
-                 )
-
-    # print("Calculating features")
-    # time_map_path = "/home/janrei1@ad.cmm.se/Desktop/22A5x4-2.subtr.reconstr.res/time_map.npy"
-    # event_map_path = "/home/janrei1@ad.cmm.se/Desktop/22A5x4-2.subtr.reconstr.res/event_map/"
-    # ed.custom_slim_features(time_map_path, path, event_map_path)
-    #
-    # print("Saving")
-    # output_folder="/home/janrei1@ad.cmm.se/Desktop/22A5x4-2.subtr.reconstr.res/"
-    # if output_folder is not None:
-    #     with open(f"{output_folder}/meta.json", 'w') as outfile:
-    #         json.dump(meta, outfile)
+    ed = EventDetector(args.input, verbosity=10)
+    ed.run(dataset=args.loc, threshold=4, use_dask=use_dask, subset=subset)
 
     dt = time.time() - t0
     print("{:.1f} min".format(dt / 60) if dt > 60 else "{:.1f} s".format(dt))
-
-    sys.exit(2)
-
-    # # event_map = event_map > 1
-    # spacer = np.ones((600, 1))
-    # subset = [0, event_map.shape[0]] if subset is None else subset
-    # plt.imshow(np.concatenate((event_map[0, :, :], spacer,
-    #                            event_map[int(subset[1] / 2), :, :], spacer,
-    #                            event_map[subset[1] - 5, :, :]),
-    #                           axis=1))
-    # plt.show()
-
-    print("Done!")
-
-    ep = ed.event_properties
-    ep[0].area
-
-
-    # print("Saving")
-    # evt_dask = da.from_array(event_map)
-    # evt_dask.to_tiledb(path+"evt_map.tdb")
-
-    smoXY = 1
-    thr = 1
-
-    ed = EventDetector(path, verbosity=10)
-    data = ed._load(dataset_name=loc, use_dask=True, subset=subset)
-    p(data, data)
-    noise = ed.estimate_background(data).compute()
-    print("Noise: {} [{}]".format(noise, thr * noise))
-
-    active_pixels = ndfilters.gaussian_filter(data, smoXY) > thr  # * noise
-    ap2 = active_pixels.copy()
-    struct = ndimage.generate_binary_structure(3, 4)
-    print(struct.shape, "\n", struct)
-    ap2 = ndmorph.binary_opening(ap2, structure=struct)
-    ap2 = ndmorph.binary_closing(ap2, structure=struct)
-    p(active_pixels, ap2)
-
-    tf.imsave(path + ".del.tiff", data)
-    tf.imsave(path + ".del1.tiff", active_pixels)
-    tf.imsave(path + ".del2.tiff", ap2)
-    data_masked = data.copy()
-    data_masked[ap2 > 0] = 0
-    tf.imsave(path + ".del3.tiff", data_masked)
-
-
-    # ragged array
-    num_events = len(event_properties)
-    bboxes = np.array([[p.bbox[0], p.bbox[3], p.bbox[1], p.bbox[4], p.bbox[2], p.bbox[5]] for p in event_properties])
-
-
-    elength = bboxes[:, 1]-bboxes[:, 0]
-    eindices = np.cumsum(elength)  # indices for each event trace
-    raw_traces = da.from_array(np.zeros(np.sum(elength), dtype=np.single))
-
-    for i, p in enumerate(event_properties):
-
-        i0 = eindices[i-1] if i > 0 else 0
-        i1 = eindices[i]
-
-        masked = da.ma.masked_array(p.intensity_image, p.intensity_image == 0)
-        raw_traces[i0:i1] = da.ma.filled(np.nanmean(masked, axis=(1, 2)))
-
-    raw_traces = raw_traces.compute()
-    print(type(raw_traces))
-
-    # multiprocessing
-    def func(event):
-        area = event["area"]
-        print(area)
-
-    with mp.Pool(mp.cpu_count()) as p:
-        p.map(func, ep[:24])
