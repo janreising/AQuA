@@ -21,14 +21,16 @@ from skimage import measure, morphology  # , segmentation
 import dask.array as da
 from dask.diagnostics import ProgressBar, Profiler, ResourceProfiler
 from dask_image import ndmorph, ndfilters, ndmeasure
+from dask.distributed import Client
 
 import matplotlib.pyplot as plt
 
 # import multiprocessing as mp
 # from multiprocessing import shared_memory
 
-import multiprocess as mp
-from multiprocess import shared_memory
+# import multiprocess as mp
+from multiprocessing import cpu_count
+# from multiprocess import shared_memory
 from itertools import repeat
 
 import sys
@@ -38,6 +40,8 @@ import warnings
 import dask
 
 import json
+
+from pathlib import Path
 
 # from pathos.multiprocessing import ProcessingPool as pPool
 def analyze(event, arr):
@@ -52,38 +56,37 @@ class EventDetector:
     # TODO define inactive pixels through rolling std deviation and use as mask
     # TODO use inactive pixels to estimate photo bleaching
 
-    def __init__(self, file_path: str,
+    def __init__(self, input_path: str,
                  output: str = None, indices: np.array = None, verbosity: int = 1):
-
-        # quality check arguments
-        assert os.path.isfile(file_path) or os.path.isdir(file_path), f"input file does not exist: {file_path}"
-        assert output is None or ~ os.path.isfile(output), f"output file already exists: {output}"
-        assert indices is None or indices.shape == (3, 2), "indices must be np.arry of shape (3, 2) -> ((z0, z1), " \
-                                                           "(x0, x1), (y0, y1)). Found: " + indices
 
         # initialize verbosity
         self.vprint = self.verbosity_print(verbosity)
         self.last_timestamp = time.time()
 
         # paths
-        working_directory = os.sep.join(file_path.split(os.sep)[:-1])
-        self.file_path = file_path
+        self.input_path = Path(input_path)
+        working_directory = self.input_path.parent
+        self.output_directory = output if output is not None else self.input_path.with_suffix(".roi")
 
-        if output is None:
-            out_base = ".".join(file_path.split(".")[:-1])
-            out_ind = "" if indices is None else "_{}-{}_".format(indices[0], indices[1])
+        if not self.output_directory.is_dir():
+            os.mkdir(self.output_directory)
 
-            output_path = f"{out_base}{out_ind}_aqua.h5"
-        else:
-            output_path = output
-
-        # print settings
         self.vprint(f"working directory: {working_directory}", 1)
-        self.vprint(f"input file: {self.file_path}", 1)
-        self.vprint(f"output file: {output_path}", 1)
+        self.vprint(f"input file: {self.input_path}", 1)
+        self.vprint(f"output directory: {self.output_directory}", 1)
 
-        # Variables
+        # TODO enforce tileDB input
+
+        # TODO double check all of this
+        # quality check arguments
+        assert os.path.isfile(input_path) or os.path.isdir(input_path), f"input file does not exist: {input_path}"
+        # assert output is None or ~ os.path.isfile(output), f"output file already exists: {output}"  # TODO assert output
+        assert indices is None or indices.shape == (3, 2), "indices must be np.arry of shape (3, 2) -> ((z0, z1), " \
+                                                           "(x0, x1), (y0, y1)). Found: " + indices
+
+        # shared variables
         self.file = None
+        self.Z, self.X, self.Y = None, None, None
         self.meta = {}
 
     def run(self, dataset=None,
@@ -96,77 +99,59 @@ class EventDetector:
         self.meta["adjust_for_noise"] = adjust_for_noise
 
         # profiling
-        pbar = ProgressBar(minimum=5)
+        pbar = ProgressBar(minimum=30)
         pbar.register()
 
-        # prof = Profiler()
-        # prof.register()
-        #
+        # TODO save this information somewhere
         # resources = ResourceProfiler()
         # resources.register()
 
         # load data
         data = self._load(dataset_name=dataset, use_dask=use_dask, subset=subset)
-        # self.data = data
-        self.Z, self.X, self.Y = data.shape  # TODO move
+        self.Z, self.X, self.Y = data.shape
         self.vprint(data if use_dask else data.shape, 2)
 
-        noise = self.estimate_background(data) if adjust_for_noise else 1
+        # calculate event map
+        event_map_path = self.output_directory.joinpath("event_map.tdb")
+        if not os.path.isdir(event_map_path):
+            self.vprint("Estimating noise", 2)
+            # TODO maybe should be adjusted since it might already be calculated
+            noise = self.estimate_background(data) if adjust_for_noise else 1
 
-        # event_map, event_properties = self.get_events(data, roi_threshold=threshold, var_estimate=noise,
-        #                                               min_roi_size=min_size)
+            self.vprint("Thresholding events", 2)
+            event_map = self.get_events(data, roi_threshold=threshold, var_estimate=noise, min_roi_size=min_size)
 
-        event_map = self.get_events(data, roi_threshold=threshold, var_estimate=noise, min_roi_size=min_size)
+            self.vprint(f"Saving event map to: {event_map_path}", 2)
+            event_map.to_tiledb(event_map_path.as_posix())
 
+        else:
+            self.vprint(f"Loading event map from: {event_map_path}", 2)
+            event_map = da.from_tiledb(event_map_path.as_posix())
+
+        # calculate time map
+        self.vprint("Calculating time map", 2)
+        time_map_path = self.output_directory.joinpath("time_map.npy")
+        if not time_map_path.is_dir():
+            time_map = self.get_time_map(event_map)
+
+            self.vprint(f"Saving event map to: {time_map_path}", 2)
+            np.save(time_map_path, time_map)
+        else:
+            self.vprint(f"Loading time map from: {time_map_path}", 2)
+            time_map = np.load(time_map_path.as_posix())
+
+        # calculate features
+        self.vprint("Calculating features", 2)
+        self.custom_slim_features(time_map, self.input_path, event_map_path)
+
+        self.vprint("saving features", 2)
         if output_folder is not None:
-            # np.save(f"{output_folder}/event_map.npy", event_map)
-            da.to_npy_stack(f"{output_folder}/event_map/", event_map, axis=0)
-
-        # event_map = dask.compute(event_map)  # TODO probably not the right place to do this
-
-        # getting rid of extra variables
-        self.vprint("collecting garbage", 2)
-        del data
-        del noise
-        gc.collect()
-        time.sleep(10)
-
-        self.vprint("calculating features", 2)
-        events = self.custom_slim_features(event_map)
-
-        # return event_map, data
-
-        # return event_map, event_properties
-        # self.event_map, self.event_properties = event_map, event_properties
-
-        # meta, meta_lookup_tbl, raw_trace_store, mask_store, _ = self.dummy_slim_features(event_properties, output_folder)
-        # self.meta, self.meta_lookup_tbl, self.raw_trace_store, self.mask_store, self.footprints = meta, meta_lookup_tbl, raw_trace_store, mask_store, footprints
-        # self.vprint("features extracted", 3)
-
-        # return None
-
-        if output_folder is not None:
-
-            np.save(f"{output_folder}/events.npy", events)
-
             with open(f"{output_folder}/meta.json", 'w') as outfile:
-                json.dump(self.meta, outfile)
-
-            self.vprint("features saved", 3)
-
-        # # stop profiling
-        # # for r in prof.results:
-        # #     self.vprint(r, 2)
-        # prof.clear()
-        # prof.unregister()
-        #
-        # # for r in resources.results:
-        # #     self.vprint(r, 2)
-        # resources.clear()
-        # resources.unregister()
+                json.dump(meta, outfile)
 
         self.vprint("Run complete!", 1)
 
+        # TODO do we really not want to calculate this?
         # return event_map, raw_trace_store, mask_store, footprints, meta
 
         # features = self.calculate_event_features(data, event_map, event_properties, 1, moving_average, threshold)
@@ -199,21 +184,25 @@ class EventDetector:
         :return:
         """
 
-        if self.file_path.endswith(".h5"):
+        # TODO instead of self reference; prob better to explicitly give path as argument
+        if self.input_path.suffix == ".h5":
 
             assert dataset_name is not None, "'dataset_name' required if providing an hdf file"
 
-            file = h5.File(self.file_path, "r")
+            file = h5.File(self.input_path, "r")
             assert dataset_name in file, "dataset '{}' does not exist in file".format(dataset_name)
 
             data = da.from_array(file[dataset_name], chunks='auto') if use_dask else file[dataset_name]
 
-        elif self.file_path.endswith(".tdb"):
+        elif self.input_path.suffix in (".tdb", ".delta"):
 
-            data = tiledb.open(self.file_path)
+            data = tiledb.open(self.input_path.as_posix())
 
             if use_dask:
                 data = da.from_array(data, chunks='auto')
+
+        else:
+            self.vprint(f"unknown file type: {self.input_path}")
 
         if subset is not None:
             assert len(subset) == 6, "please provide a subset for all dimensions"
@@ -293,9 +282,6 @@ class EventDetector:
             event_map = da.from_array(np.zeros(data.shape, dtype=np.uintc))
             event_map[:], num_events = ndimage.label(active_pixels)
             self.vprint("labelled connected pixel. #events: {}".format(num_events), 3)
-
-
-        del active_pixels   # TODO does this actually help?
 
         # characterize each event
 
@@ -661,7 +647,8 @@ class EventDetector:
 
         return summary, raw_trace_store, mask_store, footprints
 
-    def custom_slim_features(self, event_map, parallel=True):
+    # TODO anything useful in here?
+    def custom_slim_features_legacy(self, event_map, parallel=True):
 
         # if parallel:
 
@@ -696,31 +683,105 @@ class EventDetector:
 
         return R
 
-        # else:
+    def custom_slim_features(self, time_map, data_path, event_path):
 
-        # areas, traces, footprints = [], [], []
-        # for i in tqdm(range(1, num_events)):
-        #
-        #     z, x, y = np.where(event_map == i)
-        #     z0, z1 = np.min(z), np.max(z)
-        #     x0, x1 = np.min(x), np.max(x)
-        #     y0, y1 = np.min(y), np.max(y)
-        #
-        #     dz, dx, dy = z1-z0, x1-x0, y1-y0
-        #     z, x, y = z-z0, x-x0, y-y0
-        #
-        #     mask = np.ones((dz+1, dx+1, dy+1), dtype=np.bool_)
-        #     mask[(z, x, y)] = 0
-        #
-        #     signal = data[z0:z1+1, x0:x1+1, y0:y1+1]  # TODO weird that i need +1 here
-        #     msignal = np.ma.masked_array(signal, mask)
-        #
-        #     # get number of pixels
-        #     areas.append(len(z))
-        #     traces.append(np.ma.filled(np.nanmean(msignal, axis=(1, 2))))
-        #     footprints.append(np.min(mask, axis=0))
-        #
-        #     return areas, traces, footprints
+            # print(event_map)
+            # sh_em = shared_memory.SharedMemory(create=True, size=event_map.nbytes)
+            # shn_em = np.ndarray(event_map.shape, dtype=event_map.dtype, buffer=sh_em.buf)
+            # shn_em[:] = event_map
+            #
+            # num_events = np.max(shn_em)
+
+            # create chunks
+
+            self.vprint("collecting tasks ...", 3)
+            num_frames, num_rois = time_map.shape
+
+            min_split_size=50
+            split_size = max(int(num_frames / (cpu_count() * 10)), min_split_size)
+            splits = np.arange(0, num_frames, split_size)
+
+            last_max_roi = 0
+            c = []
+            for split in splits:
+
+                start, stop = split, split+split_size
+
+                if stop >= num_frames:
+                    c.append([start, num_frames, last_max_roi, num_rois, len(splits)])
+                    continue
+
+                last_frame = np.where(time_map[stop, :] == 1)[0]
+                max_roi = np.max(last_frame)
+
+                zs, _ = np.where(time_map[:, last_frame[1:]] == 1)
+                max_z = np.max(zs)
+
+                c.append([start, max_z, last_max_roi+1, max_roi, len(splits)])
+                last_max_roi = max_roi
+
+            random.shuffle(c)
+            self.vprint("Num tasks: {} [{}]".format(len(c), len(c[0])), 3)
+
+            out_path = event_path.parent.joinpath("events/")
+            if not out_path.is_dir():
+                os.mkdir(out_path)
+
+            tasks = zip(c, repeat(data_path), repeat(event_path), repeat(out_path))
+            with Client() as client:
+                futures = [client.submit(func_multi, *task ) for task in tasks]
+
+                client.gather(futures)
+
+            # else:
+
+            # areas, traces, footprints = [], [], []
+            # for i in tqdm(range(1, num_events)):
+            #
+            #     z, x, y = np.where(event_map == i)
+            #     z0, z1 = np.min(z), np.max(z)
+            #     x0, x1 = np.min(x), np.max(x)
+            #     y0, y1 = np.min(y), np.max(y)
+            #
+            #     dz, dx, dy = z1-z0, x1-x0, y1-y0
+            #     z, x, y = z-z0, x-x0, y-y0
+            #
+            #     mask = np.ones((dz+1, dx+1, dy+1), dtype=np.bool_)
+            #     mask[(z, x, y)] = 0
+            #
+            #     signal = data[z0:z1+1, x0:x1+1, y0:y1+1]  # TODO weird that i need +1 here
+            #     msignal = np.ma.masked_array(signal, mask)
+            #
+            #     # get number of pixels
+            #     areas.append(len(z))
+            #     traces.append(np.ma.filled(np.nanmean(msignal, axis=(1, 2))))
+            #     footprints.append(np.min(mask, axis=0))
+            #
+            #     return areas, traces, footprints
+
+    def get_time_map(self, event_map, chunk=200):
+
+        time_map = np.zeros((event_map.shape[0], np.max(event_map) + 1), dtype=np.bool_)
+
+        Z = event_map.shape[0]
+        if type(event_map) == da.core.Array:
+
+            for c in tqdm(range(0, Z, chunk)):
+
+                cmax = min(Z, c+chunk)
+                event_map_memory = event_map[c:cmax, :, :].compute()
+
+                for z in range(c, cmax):
+                    time_map[z, np.unique(event_map_memory[z-c, :, :])] = 1
+
+        else:
+
+            print("Assuming event_map is in RAM ... ")
+            for z in tqdm(range(Z)):
+                time_map[z, np.unique(event_map[z, :, :])] = 1
+
+        return time_map
+
 
     def calculate_event_propagation(self, data, event_properties: dict, feature_list,
                                     spatial_resolution: float = 1, event_rec=None, north_x=0, north_y=1,
@@ -1730,22 +1791,78 @@ class Legacy:
 
         return np.power(dist_squared_median, 0.5)
 
+def func_multi(task, data_path, event_path, out_path):
+
+    import numpy as np
+    import tiledb
+
+    t0, t1, r0, r1, task_num = task
+    res_path = out_path.joinpath(f"events{r0}-{r1}.npy")
+
+    if os.path.isfile(res_path):
+        return 2
+
+    # load data
+    data = tiledb.open(data_path.as_posix())[t0:t1]
+    event_map = tiledb.open(event_path.as_posix())[t0:t1]
+
+    res = {}
+    for event_id in range(r0, r1):
+
+        res[event_id] = {}
+
+        try:
+            z, x, y = np.where(event_map == event_id)
+            z0, z1 = np.min(z), np.max(z)
+            x0, x1 = np.min(x), np.max(x)
+            y0, y1 = np.min(y), np.max(y)
+
+            res[event_id]["area"] = len(z)
+            res[event_id]["bbox"] = ((z0, z1), (x0, x1), (y0, y1))
+
+            dz, dx, dy = z1 - z0, x1 - x0, y1 - y0
+            z, x, y = z - z0, x - x0, y - y0
+            res[event_id]["dim"] = (dz + 1, dx + 1, dy + 1)
+            res[event_id]["pix_num"] = int((dz+1)*(dx+1)*(dy+1))
+
+            mask = np.ones((dz + 1, dx + 1, dy + 1), dtype=np.bool8)
+            mask[(z, x, y)] = 0
+            res[event_id]["mask"] = mask.flatten()
+            res[event_id]["footprint"] = np.invert(np.min(mask, axis=0)).flatten()
+
+            signal = data[z0:z1 + 1, x0:x1 + 1, y0:y1 + 1]  # TODO weird that i need +1 here
+            msignal = np.ma.masked_array(signal, mask)
+            res[event_id]["trace"] = np.ma.filled(np.nanmean(msignal, axis=(1, 2)))
+
+            res[event_id]["error"] = 0
+
+        except ValueError as err:
+            print("\t Error in ", event_id)
+            print("\t", err)
+            res[event_id]["error"] = 1
+            return -1
+
+    np.save(res_path.as_posix(), res)
+
+    # TODO remove
+    # num_files = len(os.listdir(out_path))
+    # print("Finished task {}-{} ({:.1f}%)".format(t0, t1, num_files/task_num*100))
+
+    return 1
 
 def func(event_id, shape, sh_event_name, file_path):
     from multiprocess import shared_memory
     import numpy as np
     import tiledb
 
-    res = {}
-    res["label"] = event_id
-
+    # load data
     em = shared_memory.SharedMemory(name=sh_event_name)
     em_np = np.ndarray(shape, dtype='uint16', buffer=em.buf)
 
-    # d = shared_memory.SharedMemory(name=sh_data_name)
-    # d_np = np.ndarray(shape, dtype='float32', buffer=d.buf)
-
     data = tiledb.open(file_path)
+
+    res = {}
+    res["label"] = event_id
 
     z, x, y = np.where(em_np == event_id)
     z0, z1 = np.min(z), np.max(z)
@@ -1810,21 +1927,34 @@ if __name__ == "__main__":
     use_dask = True
     use_subset = False
 
-    subset = None if use_small or not use_subset else [0, 100, None, None, None, None]
+    subset = None if use_small or not use_subset else [0, 1000, None, None, None, None]
     print("subset: ", subset)
 
     # file path
-    directory = "C:/Users/janrei/Desktop/"
-    file = "22A5x4-1.zip.h5" if use_small else "22A5x4-2.subtr.reconstr.mc.tdb"  # "22A5x4-2.zip.h5.tdb"
+    directory = "/home/janrei1@ad.cmm.se/Desktop/del/"
+    # file = "22A5x4-1.zip.h5" if use_small else "22A5x4-2-subtracted-mc.zip.h5.reconstructed_.h5.tdb"  # "22A5x4-2.zip.h5.tdb"
+    file = "22A6x1-1.delta"
     loc = "/dff/neu" if use_small else "/dff/ast/"
     path = directory + file
 
-    # output = 'C:/Users/janrei/Desktop/22A5x4-2.zip.h5.tdb'
+    # run code
+    meta = {}
 
     ed = EventDetector(path, verbosity=10)
-    ed.run(dataset=loc, threshold=0.1, use_dask=use_dask, subset=subset,
-                 output_folder="C:/Users/janrei/Desktop/22A5x4-2.subtr.reconstr.res/"
+    ed.run(dataset=loc, threshold=0.001, use_dask=use_dask, subset=subset,
+                 # output_folder="C:/Users/janrei/Desktop/22A5x4-2.subtr.reconstr.res/"
                  )
+
+    # print("Calculating features")
+    # time_map_path = "/home/janrei1@ad.cmm.se/Desktop/22A5x4-2.subtr.reconstr.res/time_map.npy"
+    # event_map_path = "/home/janrei1@ad.cmm.se/Desktop/22A5x4-2.subtr.reconstr.res/event_map/"
+    # ed.custom_slim_features(time_map_path, path, event_map_path)
+    #
+    # print("Saving")
+    # output_folder="/home/janrei1@ad.cmm.se/Desktop/22A5x4-2.subtr.reconstr.res/"
+    # if output_folder is not None:
+    #     with open(f"{output_folder}/meta.json", 'w') as outfile:
+    #         json.dump(meta, outfile)
 
     dt = time.time() - t0
     print("{:.1f} min".format(dt / 60) if dt > 60 else "{:.1f} s".format(dt))
