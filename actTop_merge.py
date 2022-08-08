@@ -43,6 +43,8 @@ import json
 
 from pathlib import Path
 
+import tifffile as tf
+
 # from pathos.multiprocessing import ProcessingPool as pPool
 def analyze(event, arr):
     arr[event.label] = event.label
@@ -90,7 +92,7 @@ class EventDetector:
         self.meta = {}
 
     def run(self, dataset=None,
-            threshold=3, min_size=20, moving_average=25, use_dask=False, adjust_for_noise=False,
+            threshold=3, min_size=20, use_dask=False, adjust_for_noise=False,
             subset=None, output_folder=None):
 
         self.meta["subset"] = subset
@@ -99,7 +101,7 @@ class EventDetector:
         self.meta["adjust_for_noise"] = adjust_for_noise
 
         # profiling
-        pbar = ProgressBar(minimum=30)
+        pbar = ProgressBar(minimum=10)
         pbar.register()
 
         # TODO save this information somewhere
@@ -122,16 +124,25 @@ class EventDetector:
             event_map = self.get_events(data, roi_threshold=threshold, var_estimate=noise, min_roi_size=min_size)
 
             self.vprint(f"Saving event map to: {event_map_path}", 2)
-            event_map.to_tiledb(event_map_path.as_posix())
+            event_map.rechunk((100, 100, 100)).to_tiledb(event_map_path.as_posix())
+
+            tiff_path = event_map_path.with_suffix(".tiff")
+            self.vprint(f"Saving tiff to : {tiff_path}", 2)
+            tf.imwrite(tiff_path, event_map, dtype=event_map.dtype)
 
         else:
             self.vprint(f"Loading event map from: {event_map_path}", 2)
             event_map = da.from_tiledb(event_map_path.as_posix())
 
+            tiff_path = event_map_path.with_suffix(".tiff")
+            if not tiff_path.is_file():
+                self.vprint(f"Saving tiff to : {tiff_path}", 2)
+                tf.imwrite(tiff_path, event_map, dtype=event_map.dtype)
+
         # calculate time map
         self.vprint("Calculating time map", 2)
         time_map_path = self.output_directory.joinpath("time_map.npy")
-        if not time_map_path.is_dir():
+        if not time_map_path.is_file():
             time_map = self.get_time_map(event_map)
 
             self.vprint(f"Saving event map to: {time_map_path}", 2)
@@ -145,9 +156,8 @@ class EventDetector:
         self.custom_slim_features(time_map, self.input_path, event_map_path)
 
         self.vprint("saving features", 2)
-        if output_folder is not None:
-            with open(f"{output_folder}/meta.json", 'w') as outfile:
-                json.dump(meta, outfile)
+        with open(self.output_directory.joinpath("meta.json"), 'w') as outfile:
+            json.dump(self.meta, outfile)
 
         self.vprint("Run complete!", 1)
 
@@ -157,7 +167,7 @@ class EventDetector:
         # features = self.calculate_event_features(data, event_map, event_properties, 1, moving_average, threshold)
         # features = self.calculate_event_propagation(data, event_properties, features)
 
-    def verbosity_print(self, verbosity_level: int):
+    def verbosity_print(self, verbosity_level: int=5):
 
         """ Creates print function that takes global verbosity level into account """
 
@@ -265,7 +275,7 @@ class EventDetector:
 
             # label connected pixels
             # event_map, num_events = measure.label(active_pixels, return_num=True)
-            event_map = np.zeros(data.shape, dtype=np.uint16)
+            event_map = np.zeros(data.shape, dtype=np.uintc)
             event_map[:], num_events = ndimage.label(active_pixels)
             self.vprint("labelled connected pixel. #events: {}".format(num_events), 3)
 
@@ -289,6 +299,13 @@ class EventDetector:
         #                                        extra_properties=[self.trace, self.footprint]
         #                                        )
         # self.vprint("events collected", 3)
+
+        if num_events < 2*32767:
+            event_map = event_map.astype("uint16")
+        else:
+            event_map = event_map.astype("uint32")
+
+        self.vprint("event_map dtype: {}".format(event_map.dtype), 4)
 
         return event_map#, event_properties
 
@@ -683,7 +700,7 @@ class EventDetector:
 
         return R
 
-    def custom_slim_features(self, time_map, data_path, event_path):
+    def custom_slim_features(self, time_map, data_path, event_path, split_size=50):
 
             # print(event_map)
             # sh_em = shared_memory.SharedMemory(create=True, size=event_map.nbytes)
@@ -697,8 +714,6 @@ class EventDetector:
             self.vprint("collecting tasks ...", 3)
             num_frames, num_rois = time_map.shape
 
-            min_split_size=50
-            split_size = max(int(num_frames / (cpu_count() * 10)), min_split_size)
             splits = np.arange(0, num_frames, split_size)
 
             last_max_roi = 0
@@ -714,24 +729,34 @@ class EventDetector:
                 last_frame = np.where(time_map[stop, :] == 1)[0]
                 max_roi = np.max(last_frame)
 
+                if max_roi == 0:
+                    continue
+
                 zs, _ = np.where(time_map[:, last_frame[1:]] == 1)
                 max_z = np.max(zs)
 
-                c.append([start, max_z, last_max_roi+1, max_roi, len(splits)])
+                c.append([start, max_z, last_max_roi+1, max_roi, max_z-start])
+                self.vprint(c[-1], 5)
                 last_max_roi = max_roi
 
             random.shuffle(c)
-            self.vprint("Num tasks: {} [{}]".format(len(c), len(c[0])), 3)
+            self.vprint("Num tasks: {} [step size: {}, max_roi: {}]".format(len(c), split_size, last_max_roi), 3)
 
             out_path = event_path.parent.joinpath("events/")
             if not out_path.is_dir():
                 os.mkdir(out_path)
 
             tasks = zip(c, repeat(data_path), repeat(event_path), repeat(out_path))
-            with Client() as client:
+            with Client(memory_limit='40GB') as client:
                 futures = [client.submit(func_multi, *task ) for task in tasks]
 
                 client.gather(futures)
+
+            # combine results
+            events = {}
+            for e in os.listdir(out_path):
+                events.update(np.load(out_path.joinpath(e), allow_pickle=True)[()])
+            np.save(event_path.parent.joinpath("events.npy"), events)
 
             # else:
 
@@ -1796,14 +1821,15 @@ def func_multi(task, data_path, event_path, out_path):
     import numpy as np
     import tiledb
 
-    t0, t1, r0, r1, task_num = task
+    t0, t1, r0, r1, _ = task
     res_path = out_path.joinpath(f"events{r0}-{r1}.npy")
 
     if os.path.isfile(res_path):
         return 2
 
     # load data
-    data = tiledb.open(data_path.as_posix())[t0:t1]
+    # TODO inefficient
+    data = tiledb.open(data_path.as_posix())[t0:t1]  # TODO this gets very big if long events present
     event_map = tiledb.open(event_path.as_posix())[t0:t1]
 
     res = {}
@@ -1933,7 +1959,7 @@ if __name__ == "__main__":
     # file path
     directory = "/home/janrei1@ad.cmm.se/Desktop/del/"
     # file = "22A5x4-1.zip.h5" if use_small else "22A5x4-2-subtracted-mc.zip.h5.reconstructed_.h5.tdb"  # "22A5x4-2.zip.h5.tdb"
-    file = "22A6x1-1.delta"
+    file = "22A6x1-2.delta"
     loc = "/dff/neu" if use_small else "/dff/ast/"
     path = directory + file
 
@@ -1941,7 +1967,7 @@ if __name__ == "__main__":
     meta = {}
 
     ed = EventDetector(path, verbosity=10)
-    ed.run(dataset=loc, threshold=0.001, use_dask=use_dask, subset=subset,
+    ed.run(dataset=loc, threshold=4, use_dask=use_dask, subset=subset,
                  # output_folder="C:/Users/janrei/Desktop/22A5x4-2.subtr.reconstr.res/"
                  )
 
