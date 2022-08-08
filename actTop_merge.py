@@ -44,7 +44,7 @@ import json
 from pathlib import Path
 
 import tifffile as tf
-
+from dask.distributed import progress
 # from pathos.multiprocessing import ProcessingPool as pPool
 def analyze(event, arr):
     arr[event.label] = event.label
@@ -712,43 +712,29 @@ class EventDetector:
             # create chunks
 
             self.vprint("collecting tasks ...", 3)
-            num_frames, num_rois = time_map.shape
+            data = da.from_tiledb(data_path.as_posix())
+            event_map = da.from_tiledb(event_path.as_posix())
 
-            splits = np.arange(0, num_frames, split_size)
-
-            last_max_roi = 0
-            c = []
-            for split in splits:
-
-                start, stop = split, split+split_size
-
-                if stop >= num_frames:
-                    c.append([start, num_frames, last_max_roi, num_rois, len(splits)])
-                    continue
-
-                last_frame = np.where(time_map[stop, :] == 1)[0]
-                max_roi = np.max(last_frame)
-
-                if max_roi == 0:
-                    continue
-
-                zs, _ = np.where(time_map[:, last_frame[1:]] == 1)
-                max_z = np.max(zs)
-
-                c.append([start, max_z, last_max_roi+1, max_roi, max_z-start])
-                self.vprint(c[-1], 5)
-                last_max_roi = max_roi
-
-            random.shuffle(c)
-            self.vprint("Num tasks: {} [step size: {}, max_roi: {}]".format(len(c), split_size, last_max_roi), 3)
+            e_start = np.argmax(time_map, axis=0)
+            e_stop = time_map.shape[0]-np.argmax(time_map[::-1, :], axis=0)
 
             out_path = event_path.parent.joinpath("events/")
             if not out_path.is_dir():
                 os.mkdir(out_path)
 
-            tasks = zip(c, repeat(data_path), repeat(event_path), repeat(out_path))
+            e_ids = list(range(1, len(e_start)))
+            random.shuffle(e_ids)
+            futures = []
             with Client(memory_limit='40GB') as client:
-                futures = [client.submit(func_multi, *task ) for task in tasks]
+
+                for e_id in e_ids:
+                    futures.append(
+                        client.submit(
+                            characterize_event,
+                            e_id, e_start[e_id], e_stop[e_id], data_path, event_path, out_path
+                        )
+                    )
+                progress(futures)
 
                 client.gather(futures)
 
@@ -1816,6 +1802,52 @@ class Legacy:
 
         return np.power(dist_squared_median, 0.5)
 
+def characterize_event(event_id, t0, t1, data_path, event_map_path, out_path):
+
+    res_path = out_path.joinpath(f"events{event_id}.npy")
+    if os.path.isfile(res_path):
+        return 2
+
+    data = tiledb.open(data_path.as_posix())[t0:t1, :, :]
+    event_map = tiledb.open(event_map_path.as_posix())[t0:t1, :, :]
+
+    res = {}
+    res[event_id] = {}
+
+    try:
+        z, x, y = np.where(event_map == event_id)
+        z0, z1 = np.min(z), np.max(z)
+        x0, x1 = np.min(x), np.max(x)
+        y0, y1 = np.min(y), np.max(y)
+
+        res[event_id]["area"] = len(z)
+        res[event_id]["bbox"] = ((t0+z0, t0+z1), (x0, x1), (y0, y1))
+
+        dz, dx, dy = z1 - z0, x1 - x0, y1 - y0
+        z, x, y = z - z0, x - x0, y - y0
+        res[event_id]["dim"] = (dz + 1, dx + 1, dy + 1)
+        res[event_id]["pix_num"] = int((dz+1)*(dx+1)*(dy+1))
+
+        mask = np.ones((dz + 1, dx + 1, dy + 1), dtype=np.bool8)
+        mask[(z, x, y)] = 0
+        res[event_id]["mask"] = mask.flatten()
+        res[event_id]["footprint"] = np.invert(np.min(mask, axis=0)).flatten()
+
+        signal = data[z0:z1 + 1, x0:x1 + 1, y0:y1 + 1]  # TODO weird that i need +1 here
+        msignal = np.ma.masked_array(signal, mask)
+        res[event_id]["trace"] = np.ma.filled(np.nanmean(msignal, axis=(1, 2)))
+
+        res[event_id]["error"] = 0
+
+    except ValueError as err:
+            print("\t Error in ", event_id)
+            print("\t", err)
+            res[event_id]["error"] = 1
+            return -1
+
+    np.save(res_path.as_posix(), res)
+
+# DEPRECATED: uses up too much memory
 def func_multi(task, data_path, event_path, out_path):
 
     import numpy as np
@@ -1831,6 +1863,9 @@ def func_multi(task, data_path, event_path, out_path):
     # TODO inefficient
     data = tiledb.open(data_path.as_posix())[t0:t1]  # TODO this gets very big if long events present
     event_map = tiledb.open(event_path.as_posix())[t0:t1]
+
+    print("data: {:.2f} ({}) event: {:.2f} ({})".format(data.nbytes/1e9, data.dtype, event_map.nbytes/1e9, event_map.dtype))
+    return -1
 
     res = {}
     for event_id in range(r0, r1):
