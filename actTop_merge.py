@@ -1,6 +1,7 @@
 import argparse
 import os
 import random
+import shutil
 
 import h5py as h5
 import tiledb
@@ -30,7 +31,7 @@ import matplotlib.pyplot as plt
 
 # import multiprocess as mp
 from multiprocessing import cpu_count
-# from multiprocess import shared_memory
+from multiprocess import shared_memory
 from itertools import repeat
 
 import sys
@@ -700,7 +701,7 @@ class EventDetector:
 
         return R
 
-    def custom_slim_features(self, time_map, data_path, event_path, split_size=50):
+    def custom_slim_features(self, time_map, data_path, event_path):
 
             # print(event_map)
             # sh_em = shared_memory.SharedMemory(create=True, size=event_map.nbytes)
@@ -711,9 +712,24 @@ class EventDetector:
 
             # create chunks
 
+            # shared memory
+            self.vprint("creating shared memory arrays ...", 3)
+            data = tiledb.open(data_path.as_posix())
+            n_bytes = data.shape[0]*data.shape[1]*data.shape[2]*data.dtype.itemsize  # get array info
+            data_sh = shared_memory.SharedMemory(create=True, size=n_bytes)  # create shared buffer
+            data_ = np.ndarray(data.shape, data.dtype, buffer=data_sh.buf) # convert buffer to array
+            data_[:] = data[:]  # load data
+            data_info = (data.shape, data.dtype, data_sh.name) # save info for use in task
+
+            event = tiledb.open(event_path.as_posix())
+            n_bytes = event.shape[0]*event.shape[1]*event.shape[2]*event.dtype.itemsize
+            event_sh = shared_memory.SharedMemory(create=True, size=n_bytes)
+            event_ = np.ndarray(event.shape, event.dtype, buffer=event_sh.buf) # convert buffer to array
+            event_[:] = event[:]  # load data
+            event_info = (event.shape, event.dtype, event_sh.name)
+
+            # collecting tasks
             self.vprint("collecting tasks ...", 3)
-            data = da.from_tiledb(data_path.as_posix())
-            event_map = da.from_tiledb(event_path.as_posix())
 
             e_start = np.argmax(time_map, axis=0)
             e_stop = time_map.shape[0]-np.argmax(time_map[::-1, :], axis=0)
@@ -722,6 +738,7 @@ class EventDetector:
             if not out_path.is_dir():
                 os.mkdir(out_path)
 
+            # push tasks to client
             e_ids = list(range(1, len(e_start)))
             random.shuffle(e_ids)
             futures = []
@@ -731,18 +748,30 @@ class EventDetector:
                     futures.append(
                         client.submit(
                             characterize_event,
-                            e_id, e_start[e_id], e_stop[e_id], data_path, event_path, out_path
+                            e_id, e_start[e_id], e_stop[e_id], data_info, event_info, out_path
                         )
                     )
                 progress(futures)
 
                 client.gather(futures)
 
+            # close shared memory
+            try:
+                data_sh.close()
+                data_sh.unlink()
+
+                event_sh.close()
+                event_sh.unlink()
+            except FileNotFoundError as err:
+                print("An error occured during shared memory closing: ")
+                print(err)
+
             # combine results
             events = {}
             for e in os.listdir(out_path):
                 events.update(np.load(out_path.joinpath(e), allow_pickle=True)[()])
             np.save(event_path.parent.joinpath("events.npy"), events)
+            shutil.rmtree(out_path)
 
             # else:
 
@@ -1802,14 +1831,24 @@ class Legacy:
 
         return np.power(dist_squared_median, 0.5)
 
-def characterize_event(event_id, t0, t1, data_path, event_map_path, out_path):
+def characterize_event(event_id, t0, t1, data_info, event_info, out_path):
 
     res_path = out_path.joinpath(f"events{event_id}.npy")
     if os.path.isfile(res_path):
         return 2
 
-    data = tiledb.open(data_path.as_posix())[t0:t1, :, :]
-    event_map = tiledb.open(event_map_path.as_posix())[t0:t1, :, :]
+    # data = tiledb.open(data_path.as_posix())[t0:t1, :, :]
+    # event_map = tiledb.open(event_map_path.as_posix())[t0:t1, :, :]
+
+    d_shape, d_dtype, d_name = data_info
+    data_buffer = shared_memory.SharedMemory(name=d_name)
+    data = np.ndarray(d_shape, d_dtype, buffer=data_buffer.buf)
+    data = data[t0:t1, :, :]
+
+    e_shape, e_dtype, e_name = event_info
+    event_buffer = shared_memory.SharedMemory(name=e_name)
+    event_map = np.ndarray(e_shape, e_dtype, buffer=event_buffer.buf)
+    event_map = event_map[t0:t1, :, :]
 
     res = {}
     res[event_id] = {}
@@ -1846,6 +1885,9 @@ def characterize_event(event_id, t0, t1, data_path, event_map_path, out_path):
             return -1
 
     np.save(res_path.as_posix(), res)
+
+    data_buffer.close()
+    event_buffer.close()
 
 # DEPRECATED: uses up too much memory
 def func_multi(task, data_path, event_path, out_path):
