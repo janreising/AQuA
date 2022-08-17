@@ -749,19 +749,18 @@ class EventDetector:
             e_ids = list(range(1, len(e_start)))
             random.shuffle(e_ids)
             futures = []
-            with LocalCluster as lc:
-                with Client(lc, memory_limit='40GB') as client:
+            with Client(memory_limit='40GB') as client:
 
-                    for e_id in e_ids:
-                        futures.append(
-                            client.submit(
-                                characterize_event,
-                                e_id, e_start[e_id], e_stop[e_id], data_info, event_info, out_path
-                            )
+                for e_id in e_ids:
+                    futures.append(
+                        client.submit(
+                            characterize_event,
+                            e_id, e_start[e_id], e_stop[e_id], data_info, event_info, out_path
                         )
-                    progress(futures)
+                    )
+                progress(futures)
 
-                    client.gather(futures)
+                client.gather(futures)
 
             # close shared memory
             try:
