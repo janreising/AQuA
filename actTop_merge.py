@@ -97,13 +97,11 @@ class EventDetector:
         self.meta["min_size"] = min_size
         self.meta["adjust_for_noise"] = adjust_for_noise
 
-        # out put folder
+        # output folder
         if self.output is None:
-            self.output_directory = self.input_path.with_suffix(".roi") if dataset is None else self.input_path.with_suffix("{}.roi".format(dataset.split("/")[-1]))
+            self.output_directory = self.input_path.with_suffix(".roi") if dataset is None else self.input_path.with_name("{}.roi".format(dataset.split("/")[-1]))
         else:
             self.output_directory = self.output
-
-        self.output_directory = self.output if self.output is not None else self.input_path.with_suffix(".roi")
 
         if not self.output_directory.is_dir():
             os.mkdir(self.output_directory)
