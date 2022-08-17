@@ -99,7 +99,7 @@ class EventDetector:
 
         # output folder
         if self.output is None:
-            self.output_directory = self.input_path.with_suffix(".roi") if dataset is None else self.input_path.with_name("{}.roi".format(dataset.split("/")[-1]))
+            self.output_directory = self.input_path.with_suffix(".roi") if dataset is None else self.input_path.joinpath("{}.roi".format(dataset.split("/")[-1]))
         else:
             self.output_directory = self.output
 
