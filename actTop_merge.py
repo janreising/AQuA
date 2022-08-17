@@ -2011,7 +2011,7 @@ if __name__ == "__main__":
     ## arguments
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input", type=str, default=None)
-    parser.add_argument("-l", "--loc", type=str, default="inf/ast")
+    parser.add_argument("-l", "--loc", type=str, default="dff/ast")
     parser.add_argument("-t", "--threshold", type=int, default=4)
 
     args = parser.parse_args()
