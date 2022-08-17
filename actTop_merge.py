@@ -22,7 +22,7 @@ from skimage import measure, morphology  # , segmentation
 import dask.array as da
 from dask.diagnostics import ProgressBar, Profiler, ResourceProfiler
 from dask_image import ndmorph, ndfilters, ndmeasure
-from dask.distributed import Client
+from dask.distributed import Client, LocalCluster
 
 import matplotlib.pyplot as plt
 
@@ -68,15 +68,11 @@ class EventDetector:
 
         # paths
         self.input_path = Path(input_path)
+        self.output = output
         working_directory = self.input_path.parent
-        self.output_directory = output if output is not None else self.input_path.with_suffix(".roi")
-
-        if not self.output_directory.is_dir():
-            os.mkdir(self.output_directory)
 
         self.vprint(f"working directory: {working_directory}", 1)
         self.vprint(f"input file: {self.input_path}", 1)
-        self.vprint(f"output directory: {self.output_directory}", 1)
 
         # TODO enforce tileDB input
 
@@ -100,6 +96,18 @@ class EventDetector:
         self.meta["threshold"] = threshold
         self.meta["min_size"] = min_size
         self.meta["adjust_for_noise"] = adjust_for_noise
+
+        # out put folder
+        if self.output is None:
+            self.output_directory = self.input_path.with_suffix(".roi") if dataset is None else self.input_path.with_suffix("{}.roi".format(dataset.split("/")[-1]))
+        else:
+            self.output_directory = self.output
+
+        self.output_directory = self.output if self.output is not None else self.input_path.with_suffix(".roi")
+
+        if not self.output_directory.is_dir():
+            os.mkdir(self.output_directory)
+        self.vprint(f"output directory: {self.output_directory}", 1)
 
         # profiling
         pbar = ProgressBar(minimum=10)
@@ -743,18 +751,19 @@ class EventDetector:
             e_ids = list(range(1, len(e_start)))
             random.shuffle(e_ids)
             futures = []
-            with Client(memory_limit='40GB') as client:
+            with LocalCluster as lc:
+                with Client(lc, memory_limit='40GB') as client:
 
-                for e_id in e_ids:
-                    futures.append(
-                        client.submit(
-                            characterize_event,
-                            e_id, e_start[e_id], e_stop[e_id], data_info, event_info, out_path
+                    for e_id in e_ids:
+                        futures.append(
+                            client.submit(
+                                characterize_event,
+                                e_id, e_start[e_id], e_stop[e_id], data_info, event_info, out_path
+                            )
                         )
-                    )
-                progress(futures)
+                    progress(futures)
 
-                client.gather(futures)
+                    client.gather(futures)
 
             # close shared memory
             try:
