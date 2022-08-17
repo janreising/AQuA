@@ -111,6 +111,7 @@ class EventDetector:
 
         # load data
         data = self._load(dataset_name=dataset, use_dask=use_dask, subset=subset)
+        self.data = data
         self.Z, self.X, self.Y = data.shape
         self.vprint(data if use_dask else data.shape, 2)
 
@@ -714,7 +715,7 @@ class EventDetector:
 
             # shared memory
             self.vprint("creating shared memory arrays ...", 3)
-            data = tiledb.open(data_path.as_posix())
+            data = self.data
             n_bytes = data.shape[0]*data.shape[1]*data.shape[2]*data.dtype.itemsize  # get array info
             data_sh = shared_memory.SharedMemory(create=True, size=n_bytes)  # create shared buffer
             data_ = np.ndarray(data.shape, data.dtype, buffer=data_sh.buf) # convert buffer to array
