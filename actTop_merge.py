@@ -99,7 +99,7 @@ class EventDetector:
 
         # output folder
         if self.output is None:
-            self.output_directory = self.input_path.with_suffix(".roi") if dataset is None else self.input_path.joinpath("{}.roi".format(dataset.split("/")[-1]))
+            self.output_directory = self.input_path.with_suffix(".roi") if dataset is None else self.input_path.with_suffix(".roi_{}".format(dataset.split("/")[-1]))
         else:
             self.output_directory = self.output
 
@@ -2008,7 +2008,6 @@ if __name__ == "__main__":
     ## arguments
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input", type=str, default=None)
-    parser.add_argument("-l", "--loc", type=str, default="dff/ast")
     parser.add_argument("-t", "--threshold", type=int, default=4)
 
     args = parser.parse_args()
@@ -2016,11 +2015,22 @@ if __name__ == "__main__":
     use_dask = True
     subset = None
 
-    t0 = time.time()
+    if args.input.endswith(".h5"):
+        with h5.File(args.input, "r") as file:
+            keys = [f"dff/{k}" for k in list(file["dff/"])]
 
-    # run code
-    ed = EventDetector(args.input, verbosity=10)
-    ed.run(dataset=args.loc, threshold=args.threshold, use_dask=use_dask, subset=subset)
+    else:
+        keys = ["dff/ast"]
 
-    dt = time.time() - t0
-    print("{:.1f} min".format(dt / 60) if dt > 60 else "{:.1f} s".format(dt))
+    print("Keys found: {}".format(keys))
+    for key in keys:
+
+        print("Starting with : ", key)
+        t0 = time.time()
+
+        # run code
+        ed = EventDetector(args.input, verbosity=10)
+        ed.run(dataset=key, threshold=args.threshold, use_dask=use_dask, subset=subset)
+
+        dt = time.time() - t0
+        print("{:.1f} min".format(dt / 60) if dt > 60 else "{:.1f} s".format(dt))
