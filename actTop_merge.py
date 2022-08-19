@@ -18,6 +18,7 @@ from scipy.stats import zscore, norm
 from scipy.optimize import curve_fit
 
 from skimage import measure, morphology  # , segmentation
+from skimage.filters import threshold_triangle, gaussian
 
 import dask.array as da
 from dask.diagnostics import ProgressBar, Profiler, ResourceProfiler
@@ -47,6 +48,7 @@ from pathlib import Path
 import tifffile as tf
 from dask.distributed import progress
 # from pathos.multiprocessing import ProcessingPool as pPool
+
 def analyze(event, arr):
     arr[event.label] = event.label
 
@@ -89,7 +91,7 @@ class EventDetector:
         self.meta = {}
 
     def run(self, dataset=None,
-            threshold=3, min_size=20, use_dask=False, adjust_for_noise=False,
+            threshold=None, min_size=20, use_dask=False, adjust_for_noise=False,
             subset=None, output_folder=None):
 
         self.meta["subset"] = subset
@@ -99,7 +101,8 @@ class EventDetector:
 
         # output folder
         if self.output is None:
-            self.output_directory = self.input_path.with_suffix(".roi") if dataset is None else self.input_path.with_suffix(".roi_{}".format(dataset.split("/")[-1]))
+            # self.output_directory = self.input_path.with_suffix(".roi") if dataset is None else self.input_path.with_suffix(".roi_{}".format(dataset.split("/")[-1]))
+            self.output_directory = self.input_path.with_suffix(".roi") if dataset is None else self.input_path.with_suffix(".{}.roi".format(dataset.split("/")[-1]))
         else:
             self.output_directory = self.output
 
@@ -243,7 +246,7 @@ class EventDetector:
         return data
 
     def get_events(self, data: np.array, roi_threshold: float, var_estimate: float,
-                   min_roi_size: int = 10, mask_xy: np.array = None, smoXY=1,
+                   min_roi_size: int = 10, mask_xy: np.array = None, smoXY=2,
                    remove_small_object_framewise=False) -> (np.array, dict):
 
         """ identifies events in data based on threshold
@@ -260,10 +263,29 @@ class EventDetector:
         """
 
         # threshold data by significance value
-        active_pixels = da.from_array(np.zeros(data.shape, dtype=np.bool8))
-        # self.vprint("Noise threshold: {:.2f}".format(roi_threshold * np.sqrt(var_estimate)), 4)
-        absolute_threshold = roi_threshold * np.sqrt(var_estimate) if var_estimate is not None else roi_threshold
-        active_pixels[:] = ndfilters.gaussian_filter(data, smoXY) > absolute_threshold
+
+        if roi_threshold is not None:
+            active_pixels = da.from_array(np.zeros(data.shape, dtype=np.bool8))
+            # self.vprint("Noise threshold: {:.2f}".format(roi_threshold * np.sqrt(var_estimate)), 4)
+
+            absolute_threshold = roi_threshold * np.sqrt(var_estimate) if var_estimate is not None else roi_threshold
+            active_pixels[:] = ndfilters.gaussian_filter(data, smoXY) > absolute_threshold
+
+        else:
+            self.vprint("no threshold defined. Using skimage.threshold to define threshold dynamically ...", 3)
+
+            def dynamic_threshold(img):
+
+                smooth = gaussian(img, sigma=smoXY)
+                thr = 1 if np.sum(img) == 0 else threshold_triangle(smooth)
+                img_thr = smooth > thr
+                img_thr = img_thr.astype(np.bool_)
+
+                return img_thr
+
+            data_rechunked = data.rechunk((1, -1, -1))
+            active_pixels = data_rechunked.map_blocks(dynamic_threshold, dtype=np.bool_)
+
         self.vprint("identified active pixels", 3)
 
         # mask inactive pixels (accelerates subsequent computation)
@@ -762,16 +784,16 @@ class EventDetector:
 
                 client.gather(futures)
 
-            # close shared memory
-            try:
-                data_sh.close()
-                data_sh.unlink()
+                # close shared memory
+                try:
+                    data_sh.close()
+                    data_sh.unlink()
 
-                event_sh.close()
-                event_sh.unlink()
-            except FileNotFoundError as err:
-                print("An error occured during shared memory closing: ")
-                print(err)
+                    event_sh.close()
+                    event_sh.unlink()
+                except FileNotFoundError as err:
+                    print("An error occured during shared memory closing: ")
+                    print(err)
 
             # combine results
             events = {}
@@ -2008,9 +2030,10 @@ if __name__ == "__main__":
     ## arguments
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input", type=str, default=None)
-    parser.add_argument("-t", "--threshold", type=int, default=4)
+    parser.add_argument("-t", "--threshold", type=int, default=None)
 
     args = parser.parse_args()
+    args.threshold = args.threshold if args.threshold != -1 else None
 
     use_dask = True
     subset = None
