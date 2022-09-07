@@ -19,6 +19,8 @@ from scipy.optimize import curve_fit
 
 from skimage import measure, morphology  # , segmentation
 from skimage.filters import threshold_triangle, gaussian
+from skimage.feature import peak_local_max
+from skimage.segmentation import watershed
 
 import dask.array as da
 from dask.diagnostics import ProgressBar, Profiler, ResourceProfiler
@@ -26,6 +28,7 @@ from dask_image import ndmorph, ndfilters, ndmeasure
 from dask.distributed import Client, LocalCluster
 
 import matplotlib.pyplot as plt
+import matplotlib.animation as animation
 
 # import multiprocessing as mp
 # from multiprocessing import shared_memory
@@ -47,10 +50,13 @@ from pathlib import Path
 
 import tifffile as tf
 from dask.distributed import progress
+
+
 # from pathos.multiprocessing import ProcessingPool as pPool
 
 def analyze(event, arr):
     arr[event.label] = event.label
+
 
 class EventDetector:
 
@@ -102,7 +108,8 @@ class EventDetector:
         # output folder
         if self.output is None:
             # self.output_directory = self.input_path.with_suffix(".roi") if dataset is None else self.input_path.with_suffix(".roi_{}".format(dataset.split("/")[-1]))
-            self.output_directory = self.input_path.with_suffix(".roi") if dataset is None else self.input_path.with_suffix(".{}.roi".format(dataset.split("/")[-1]))
+            self.output_directory = self.input_path.with_suffix(
+                ".roi") if dataset is None else self.input_path.with_suffix(".{}.roi".format(dataset.split("/")[-1]))
         else:
             self.output_directory = self.output
 
@@ -178,7 +185,7 @@ class EventDetector:
         # features = self.calculate_event_features(data, event_map, event_properties, 1, moving_average, threshold)
         # features = self.calculate_event_propagation(data, event_properties, features)
 
-    def verbosity_print(self, verbosity_level: int=5):
+    def verbosity_print(self, verbosity_level: int = 5):
 
         """ Creates print function that takes global verbosity level into account """
 
@@ -330,14 +337,14 @@ class EventDetector:
         #                                        )
         # self.vprint("events collected", 3)
 
-        if num_events < 2*32767:
+        if num_events < 2 * 32767:
             event_map = event_map.astype("uint16")
         else:
             event_map = event_map.astype("uint32")
 
         self.vprint("event_map dtype: {}".format(event_map.dtype), 4)
 
-        return event_map#, event_properties
+        return event_map  # , event_properties
 
     def calculate_event_features(self, data: np.array, event_map: np.array, event_properties: dict,
                                  seconds_per_frame: float, smoothing_window: int, prominence: float,
@@ -522,7 +529,8 @@ class EventDetector:
     def calculate_slim_features(self, event_properties):
 
         num_events = len(event_properties)
-        bboxes = np.array([[p.bbox[0], p.bbox[3], p.bbox[1], p.bbox[4], p.bbox[2], p.bbox[5]] for p in event_properties])
+        bboxes = np.array(
+            [[p.bbox[0], p.bbox[3], p.bbox[1], p.bbox[4], p.bbox[2], p.bbox[5]] for p in event_properties])
 
         bbox_dim = np.array(
             [bboxes[:, 1] - bboxes[:, 0],  # z lengths
@@ -556,8 +564,8 @@ class EventDetector:
 
         # storage for smaller data
         meta_keys = ["raw_trace_ind_0", "raw_trace_ind_1", "mask_ind_0", "mask_ind_1",
-                 "label", "area",  # "centroid", "orientation", "eccentricity",
-                 "bbox_z0", "bbox_z1", "bbox_x0", "bbox_x1", "bbox_y0", "bbox_y1"]
+                     "label", "area",  # "centroid", "orientation", "eccentricity",
+                     "bbox_z0", "bbox_z1", "bbox_x0", "bbox_x1", "bbox_y0", "bbox_y1"]
 
         meta_lookup_tbl = {key: i for i, key in enumerate(meta_keys)}
         meta = da.from_array(np.zeros((num_events, len(meta_keys)), dtype=np.int32))
@@ -570,7 +578,6 @@ class EventDetector:
 
         # fill ragged containers
         for event_i, event_prop in tqdm(enumerate(event_properties), total=len(event_properties)):
-
             meta[event_i, meta_lookup_tbl["label"]] = event_prop.label
             intensity_image = event_prop.intensity_image
             mask = event_prop.image
@@ -611,12 +618,13 @@ class EventDetector:
             # meta["orientation"].append(event_prop.orientation)  # not implemented for 3D
             # meta["eccentricity"].append(event_prop.eccentricity)  # not implemented for 3D
 
-        return meta, meta_lookup_tbl, raw_trace_store, mask_store, None#, footprints
+        return meta, meta_lookup_tbl, raw_trace_store, mask_store, None  # , footprints
 
     def save_slim_features(self, event_properties, output_folder):
 
         num_events = len(event_properties)
-        bboxes = np.array([[p.bbox[0], p.bbox[3], p.bbox[1], p.bbox[4], p.bbox[2], p.bbox[5]] for p in event_properties])
+        bboxes = np.array(
+            [[p.bbox[0], p.bbox[3], p.bbox[1], p.bbox[4], p.bbox[2], p.bbox[5]] for p in event_properties])
 
         bbox_dim = np.array(
             [bboxes[:, 1] - bboxes[:, 0],  # z lengths
@@ -654,15 +662,16 @@ class EventDetector:
         footprints = footprints.store(tiledb.open(ft_path), compute=False, return_stored=True)
 
         # storage for smaller data
-        summary_keys = ["raw_trace_ind_0", "raw_trace_ind_1", "mask_ind_0", "mask_ind_1", "label", "area", "bbox_z0", "bbox_z1", "bbox_x0", "bbox_x1", "bbox_y0", "bbox_y1"]
+        summary_keys = ["raw_trace_ind_0", "raw_trace_ind_1", "mask_ind_0", "mask_ind_1", "label", "area", "bbox_z0",
+                        "bbox_z1", "bbox_x0", "bbox_x1", "bbox_y0", "bbox_y1"]
         self.meta["summary_columns"] = summary_keys
 
-        memmap_summary = np.memmap(f"{output_folder}/summary.mmap", mode="w+", shape=(num_events, len(summary_keys)), dtype=np.int32)
+        memmap_summary = np.memmap(f"{output_folder}/summary.mmap", mode="w+", shape=(num_events, len(summary_keys)),
+                                   dtype=np.int32)
         summary = da.from_array(memmap_summary)
 
         # fill ragged containers
         for event_i, event_prop in tqdm(enumerate(event_properties), total=len(event_properties)):
-
             mask = event_prop.image
 
             # indices
@@ -676,8 +685,8 @@ class EventDetector:
 
             # bounding box
             summary[event_i, :] = [r_ind_0, r_ind_1, m_ind_0, m_ind_1,
-                                event_prop.label, event_prop.area,
-                                z0, z1, x0, x1, y0, y1]
+                                   event_prop.label, event_prop.area,
+                                   z0, z1, x0, x1, y0, y1]
 
             # curve ROI only
             raw_trace_store[r_ind_0:r_ind_1] = event_prop.trace
@@ -710,14 +719,12 @@ class EventDetector:
         num_events = np.max(shn_em)
 
         with mp.Pool(mp.cpu_count()) as p:
-
             # TODO provide chunks; less overhead loading
             arguments = zip(range(1, num_events), repeat(event_map.shape), repeat(sh_em.name), repeat(self.file_path))
-            num_task = num_events-1
+            num_task = num_events - 1
 
             R = []
             with tqdm(total=num_task) as pbar:
-
                 for r in p.starmap(func, arguments):
                     R.append(r)
                     pbar.update()
@@ -732,101 +739,101 @@ class EventDetector:
 
     def custom_slim_features(self, time_map, data_path, event_path):
 
-            # print(event_map)
-            # sh_em = shared_memory.SharedMemory(create=True, size=event_map.nbytes)
-            # shn_em = np.ndarray(event_map.shape, dtype=event_map.dtype, buffer=sh_em.buf)
-            # shn_em[:] = event_map
-            #
-            # num_events = np.max(shn_em)
+        # print(event_map)
+        # sh_em = shared_memory.SharedMemory(create=True, size=event_map.nbytes)
+        # shn_em = np.ndarray(event_map.shape, dtype=event_map.dtype, buffer=sh_em.buf)
+        # shn_em[:] = event_map
+        #
+        # num_events = np.max(shn_em)
 
-            # create chunks
+        # create chunks
 
-            # shared memory
-            self.vprint("creating shared memory arrays ...", 3)
-            data = self.data
-            n_bytes = data.shape[0]*data.shape[1]*data.shape[2]*data.dtype.itemsize  # get array info
-            data_sh = shared_memory.SharedMemory(create=True, size=n_bytes)  # create shared buffer
-            data_ = np.ndarray(data.shape, data.dtype, buffer=data_sh.buf) # convert buffer to array
-            data_[:] = data[:]  # load data
-            data_info = (data.shape, data.dtype, data_sh.name) # save info for use in task
+        # shared memory
+        self.vprint("creating shared memory arrays ...", 3)
+        data = self.data
+        n_bytes = data.shape[0] * data.shape[1] * data.shape[2] * data.dtype.itemsize  # get array info
+        data_sh = shared_memory.SharedMemory(create=True, size=n_bytes)  # create shared buffer
+        data_ = np.ndarray(data.shape, data.dtype, buffer=data_sh.buf)  # convert buffer to array
+        data_[:] = data[:]  # load data
+        data_info = (data.shape, data.dtype, data_sh.name)  # save info for use in task
 
-            event = tiledb.open(event_path.as_posix())
-            n_bytes = event.shape[0]*event.shape[1]*event.shape[2]*event.dtype.itemsize
-            event_sh = shared_memory.SharedMemory(create=True, size=n_bytes)
-            event_ = np.ndarray(event.shape, event.dtype, buffer=event_sh.buf) # convert buffer to array
-            event_[:] = event[:]  # load data
-            event_info = (event.shape, event.dtype, event_sh.name)
+        event = tiledb.open(event_path.as_posix())
+        n_bytes = event.shape[0] * event.shape[1] * event.shape[2] * event.dtype.itemsize
+        event_sh = shared_memory.SharedMemory(create=True, size=n_bytes)
+        event_ = np.ndarray(event.shape, event.dtype, buffer=event_sh.buf)  # convert buffer to array
+        event_[:] = event[:]  # load data
+        event_info = (event.shape, event.dtype, event_sh.name)
 
-            # collecting tasks
-            self.vprint("collecting tasks ...", 3)
+        # collecting tasks
+        self.vprint("collecting tasks ...", 3)
 
-            e_start = np.argmax(time_map, axis=0)
-            e_stop = time_map.shape[0]-np.argmax(time_map[::-1, :], axis=0)
+        e_start = np.argmax(time_map, axis=0)
+        e_stop = time_map.shape[0] - np.argmax(time_map[::-1, :], axis=0)
 
-            out_path = event_path.parent.joinpath("events/")
-            if not out_path.is_dir():
-                os.mkdir(out_path)
+        out_path = event_path.parent.joinpath("events/")
+        if not out_path.is_dir():
+            os.mkdir(out_path)
 
-            # push tasks to client
-            e_ids = list(range(1, len(e_start)))
-            random.shuffle(e_ids)
-            futures = []
-            with Client(memory_limit='40GB') as client:
+        # push tasks to client
+        e_ids = list(range(1, len(e_start)))
+        random.shuffle(e_ids)
+        futures = []
+        with Client(memory_limit='40GB') as client:
 
-                for e_id in e_ids:
-                    futures.append(
-                        client.submit(
-                            characterize_event,
-                            e_id, e_start[e_id], e_stop[e_id], data_info, event_info, out_path
-                        )
+            for e_id in e_ids:
+                futures.append(
+                    client.submit(
+                        characterize_event,
+                        e_id, e_start[e_id], e_stop[e_id], data_info, event_info, out_path
                     )
-                progress(futures)
+                )
+            progress(futures)
 
-                client.gather(futures)
+            client.gather(futures)
 
-                # close shared memory
-                try:
-                    data_sh.close()
-                    data_sh.unlink()
+            # close shared memory
+            try:
+                data_sh.close()
+                data_sh.unlink()
 
-                    event_sh.close()
-                    event_sh.unlink()
-                except FileNotFoundError as err:
-                    print("An error occured during shared memory closing: ")
-                    print(err)
+                event_sh.close()
+                event_sh.unlink()
+            except FileNotFoundError as err:
+                print("An error occured during shared memory closing: ")
+                print(err)
 
-            # combine results
-            events = {}
-            for e in os.listdir(out_path):
-                events.update(np.load(out_path.joinpath(e), allow_pickle=True)[()])
-            np.save(event_path.parent.joinpath("events.npy"), events)
-            shutil.rmtree(out_path)
+        # combine results
+        events = {}
+        for e in os.listdir(out_path):
+            events.update(np.load(out_path.joinpath(e), allow_pickle=True)[()])
+        np.save(event_path.parent.joinpath("events.npy"), events)
+        shutil.rmtree(out_path)
 
-            # else:
+        # else:
 
-            # areas, traces, footprints = [], [], []
-            # for i in tqdm(range(1, num_events)):
-            #
-            #     z, x, y = np.where(event_map == i)
-            #     z0, z1 = np.min(z), np.max(z)
-            #     x0, x1 = np.min(x), np.max(x)
-            #     y0, y1 = np.min(y), np.max(y)
-            #
-            #     dz, dx, dy = z1-z0, x1-x0, y1-y0
-            #     z, x, y = z-z0, x-x0, y-y0
-            #
-            #     mask = np.ones((dz+1, dx+1, dy+1), dtype=np.bool_)
-            #     mask[(z, x, y)] = 0
-            #
-            #     signal = data[z0:z1+1, x0:x1+1, y0:y1+1]  # TODO weird that i need +1 here
-            #     msignal = np.ma.masked_array(signal, mask)
-            #
-            #     # get number of pixels
-            #     areas.append(len(z))
-            #     traces.append(np.ma.filled(np.nanmean(msignal, axis=(1, 2))))
-            #     footprints.append(np.min(mask, axis=0))
-            #
-            #     return areas, traces, footprints
+        # areas, traces, footprints = [], [], []
+        # for i in tqdm(range(1, num_events)):
+        #
+        #     z, x, y = np.where(event_map == i)
+        #     z0, z1 = np.min(z), np.max(z)
+        #     x0, x1 = np.min(x), np.max(x)
+        #     y0, y1 = np.min(y), np.max(y)
+        #
+        #     dz, dx, dy = z1-z0, x1-x0, y1-y0
+        #     z, x, y = z-z0, x-x0, y-y0
+        #
+        #     mask = np.ones((dz+1, dx+1, dy+1), dtype=np.bool_)
+        #     mask[(z, x, y)] = 0
+        #
+        #     signal = data[z0:z1+1, x0:x1+1, y0:y1+1]  # TODO weird that i need +1 here
+        #     msignal = np.ma.masked_array(signal, mask)
+        #
+        #     # get number of pixels
+        #     areas.append(len(z))
+        #     traces.append(np.ma.filled(np.nanmean(msignal, axis=(1, 2))))
+        #     footprints.append(np.min(mask, axis=0))
+        #
+        #     return areas, traces, footprints
 
     def get_time_map(self, event_map, chunk=200):
 
@@ -837,11 +844,11 @@ class EventDetector:
 
             for c in tqdm(range(0, Z, chunk)):
 
-                cmax = min(Z, c+chunk)
+                cmax = min(Z, c + chunk)
                 event_map_memory = event_map[c:cmax, :, :].compute()
 
                 for z in range(c, cmax):
-                    time_map[z, np.unique(event_map_memory[z-c, :, :])] = 1
+                    time_map[z, np.unique(event_map_memory[z - c, :, :])] = 1
 
         else:
 
@@ -850,7 +857,6 @@ class EventDetector:
                 time_map[z, np.unique(event_map[z, :, :])] = 1
 
         return time_map
-
 
     def calculate_event_propagation(self, data, event_properties: dict, feature_list,
                                     spatial_resolution: float = 1, event_rec=None, north_x=0, north_y=1,
@@ -930,7 +936,6 @@ class EventDetector:
 
                 time.sleep(1)
                 traceback.print_exc()
-
 
             msk = np.zeros((bbX, bbY, 4))
             msk[:centroid_x0, :, 0] = 1  # north
@@ -1432,10 +1437,12 @@ def export_to_tdb(path, loc=None, out=None):
             data = da.from_array(data)
             data.to_tiledb(out)
 
-def print_array_size(dimension, dtype):
 
+def print_array_size(dimension, dtype):
     A = np.zeros(dimension, dtype=dtype)
-    print("nBytes: {} ... {}GB ... max: {}-{}".format(A.nbytes, A.nbytes/1e9, np.iinfo(dtype).min, np.iinfo(dtype).max))
+    print(
+        "nBytes: {} ... {}GB ... max: {}-{}".format(A.nbytes, A.nbytes / 1e9, np.iinfo(dtype).min, np.iinfo(dtype).max))
+
 
 def p(arr1, arr2, nf=None):
     if nf is None:
@@ -1860,8 +1867,8 @@ class Legacy:
 
         return np.power(dist_squared_median, 0.5)
 
-def characterize_event(event_id, t0, t1, data_info, event_info, out_path):
 
+def characterize_event(event_id, t0, t1, data_info, event_info, out_path, split_subevents=True):
     res_path = out_path.joinpath(f"events{event_id}.npy")
     if os.path.isfile(res_path):
         return 2
@@ -1879,48 +1886,65 @@ def characterize_event(event_id, t0, t1, data_info, event_info, out_path):
     event_map = np.ndarray(e_shape, e_dtype, buffer=event_buffer.buf)
     event_map = event_map[t0:t1, :, :]
 
-    res = {}
-    res[event_id] = {}
-
-    try:
+    if split_subevents:
         z, x, y = np.where(event_map == event_id)
         z0, z1 = np.min(z), np.max(z)
         x0, x1 = np.min(x), np.max(x)
         y0, y1 = np.min(y), np.max(y)
 
-        res[event_id]["area"] = len(z)
-        res[event_id]["bbox"] = ((t0+z0, t0+z1), (x0, x1), (y0, y1))
+        mask = event_map[z0:z1, x0:x1, y0:y1]
+        mask = mask == event_id
+        raw = data[z0:z1, x0:x1, y0:y1]
 
-        dz, dx, dy = z1 - z0, x1 - x0, y1 - y0
-        z, x, y = z - z0, x - x0, y - y0
-        res[event_id]["dim"] = (dz + 1, dx + 1, dy + 1)
-        res[event_id]["pix_num"] = int((dz+1)*(dx+1)*(dy+1))
+        event_map, _ = detect_subevents(raw, mask)
 
-        mask = np.ones((dz + 1, dx + 1, dy + 1), dtype=np.bool8)
-        mask[(z, x, y)] = 0
-        res[event_id]["mask"] = mask.flatten()
-        res[event_id]["footprint"] = np.invert(np.min(mask, axis=0)).flatten()
+    res = {}
+    for em_id in np.unique(event_map):
 
-        signal = data[z0:z1 + 1, x0:x1 + 1, y0:y1 + 1]  # TODO weird that i need +1 here
-        msignal = np.ma.masked_array(signal, mask)
-        res[event_id]["trace"] = np.ma.filled(np.nanmean(msignal, axis=(1, 2)))
+        if event_id == 0:
+            continue
 
-        res[event_id]["error"] = 0
+        try:
+            event_id_key = f"{event_id}_{em_id}" if split_subevents else event_id
+            res[event_id_key] = {}
 
-    except ValueError as err:
-            print("\t Error in ", event_id)
+            z, x, y = np.where(event_map == em_id)
+            z0, z1 = np.min(z), np.max(z)
+            x0, x1 = np.min(x), np.max(x)
+            y0, y1 = np.min(y), np.max(y)
+
+            res[event_id_key]["area"] = len(z)
+            res[event_id_key]["bbox"] = ((t0 + z0, t0 + z1), (x0, x1), (y0, y1))
+
+            dz, dx, dy = z1 - z0, x1 - x0, y1 - y0
+            z, x, y = z - z0, x - x0, y - y0
+            res[event_id_key]["dim"] = (dz + 1, dx + 1, dy + 1)
+            res[event_id_key]["pix_num"] = int((dz + 1) * (dx + 1) * (dy + 1))
+
+            mask = np.ones((dz + 1, dx + 1, dy + 1), dtype=np.bool8)
+            mask[(z, x, y)] = 0
+            res[event_id_key]["mask"] = mask.flatten()
+            res[event_id_key]["footprint"] = np.invert(np.min(mask, axis=0)).flatten()
+
+            signal = data[z0:z1 + 1, x0:x1 + 1, y0:y1 + 1]  # TODO weird that i need +1 here
+            msignal = np.ma.masked_array(signal, mask)
+            res[event_id_key]["trace"] = np.ma.filled(np.nanmean(msignal, axis=(1, 2)))
+
+            res[event_id_key]["error"] = 0
+
+        except ValueError as err:
+            print("\t Error in ", event_id_key)
             print("\t", err)
-            res[event_id]["error"] = 1
-            return -1
+            res[event_id_key]["error"] = 1
 
     np.save(res_path.as_posix(), res)
 
     data_buffer.close()
     event_buffer.close()
 
+
 # DEPRECATED: uses up too much memory
 def func_multi(task, data_path, event_path, out_path):
-
     import numpy as np
     import tiledb
 
@@ -1935,7 +1959,8 @@ def func_multi(task, data_path, event_path, out_path):
     data = tiledb.open(data_path.as_posix())[t0:t1]  # TODO this gets very big if long events present
     event_map = tiledb.open(event_path.as_posix())[t0:t1]
 
-    print("data: {:.2f} ({}) event: {:.2f} ({})".format(data.nbytes/1e9, data.dtype, event_map.nbytes/1e9, event_map.dtype))
+    print("data: {:.2f} ({}) event: {:.2f} ({})".format(data.nbytes / 1e9, data.dtype, event_map.nbytes / 1e9,
+                                                        event_map.dtype))
     return -1
 
     res = {}
@@ -1955,7 +1980,7 @@ def func_multi(task, data_path, event_path, out_path):
             dz, dx, dy = z1 - z0, x1 - x0, y1 - y0
             z, x, y = z - z0, x - x0, y - y0
             res[event_id]["dim"] = (dz + 1, dx + 1, dy + 1)
-            res[event_id]["pix_num"] = int((dz+1)*(dx+1)*(dy+1))
+            res[event_id]["pix_num"] = int((dz + 1) * (dx + 1) * (dy + 1))
 
             mask = np.ones((dz + 1, dx + 1, dy + 1), dtype=np.bool8)
             mask[(z, x, y)] = 0
@@ -1982,6 +2007,7 @@ def func_multi(task, data_path, event_path, out_path):
 
     return 1
 
+
 def func(event_id, shape, sh_event_name, file_path):
     from multiprocess import shared_memory
     import numpy as np
@@ -2007,7 +2033,7 @@ def func(event_id, shape, sh_event_name, file_path):
     dz, dx, dy = z1 - z0, x1 - x0, y1 - y0
     z, x, y = z - z0, x - x0, y - y0
     res["dim"] = (dz + 1, dx + 1, dy + 1)
-    res["pix_num"] = int((dz+1)*(dx+1)*(dy+1))
+    res["pix_num"] = int((dz + 1) * (dx + 1) * (dy + 1))
 
     mask = np.ones((dz + 1, dx + 1, dy + 1), dtype=np.bool8)
     mask[(z, x, y)] = 0
@@ -2024,6 +2050,267 @@ def func(event_id, shape, sh_event_name, file_path):
         mem.unlink()
 
     return res
+
+
+def detect_subevents(img, mask, sigma=2,
+                     min_local_max_distance=5, local_max_threshold=0.5, min_roi_frame_area=5,
+                     verbosity=0):
+    assert img.shape == mask.shape, "image ({}) and mask ({}) don't have the same dimension!".format(img.shape,
+                                                                                                     mask.shape)
+
+    mask = ~mask
+    img = img if sigma is None else gaussian(img, sigma=sigma)  # TODO is this already smoothed?
+    masked_img = np.ma.masked_array(img, mask=mask)
+
+    Z, X, Y = mask.shape
+
+    new_mask = np.zeros((Z, X, Y))
+    last_mask_frame = np.zeros((X, Y))
+    next_event_id = 1
+    local_max_container = []
+    for cz in range(Z):
+
+        frame_raw = masked_img[cz, :, :]
+        frame_mask = mask[cz, :, :]
+
+        if verbosity > 3: print(f"\n----- {cz} -----")
+
+        ####################
+        ## Find Local Maxima
+
+        local_maxima = peak_local_max(frame_raw, min_distance=min_local_max_distance, threshold_rel=local_max_threshold)
+        local_maxima = np.array(
+            [(lmx, lmy, last_mask_frame[lmx, lmy]) for (lmx, lmy) in zip(local_maxima[:, 0], local_maxima[:, 1])],
+            dtype="i2")
+
+        # Try to find global maximum if no local maxima were found
+        if len(local_maxima) == 0:
+
+            mask_area = np.sum(frame_mask)  # Look for global max
+            glob_max = np.unravel_index(np.argmax(frame_raw), (X, Y))  # Look for global max
+
+            if (mask_area > 0) and (glob_max != (0, 0)):
+                local_maxima = np.array([[glob_max[0], glob_max[1], 0]])
+            else:
+                local_max_container.append(local_maxima)
+                last_mask_frame = np.zeros((X, Y), dtype="i2")
+                continue
+
+        # assign new label to new local maxima (maxima with '0' label)
+        for i in range(local_maxima.shape[0]):
+
+            if local_maxima[i, 2] == 0:
+                local_maxima[i, 2] = next_event_id
+                next_event_id += 1
+
+        # Local Dropouts
+        # sometimes local maxima drop below threshold
+        # but the event still exists at lower intensity
+        # re-introduce those local maxima if the intensity
+        # is above threshold value (mask > 0) and the event
+        # area of the previous frame is sufficient (area > min_roi_frame_area)
+        last_local_max_labels = np.unique(last_mask_frame)
+        curr_local_max_labels = np.unique(local_maxima[:, 2])
+        if verbosity > 3: print("last_local_max_labels:\n", last_local_max_labels)
+        if verbosity > 3: print("curr_local_max_labels:\n", curr_local_max_labels)
+
+        for last_local_max_label in last_local_max_labels:
+
+            if (last_local_max_label != 0) and (last_local_max_label not in curr_local_max_labels):
+
+                prev_local_maxima = local_max_container[-1]
+                if verbosity > 5: print("prev_local_maxima: ", prev_local_maxima)
+                missing_local_maxima = prev_local_maxima[prev_local_maxima[:, 2] == last_local_max_label]
+                prev_area = np.sum(new_mask[cz - 1, :, :] == last_local_max_label)
+
+                # print("missing peak: ", lp, missing_peak)
+                if (len(missing_local_maxima) < 1) or (prev_area < min_roi_frame_area):
+                    continue
+
+                lmx, lmy, _ = missing_local_maxima[0]
+                if ~ frame_mask[lmx, lmy]:  # check that local max still has ongoing event
+                    # print("missing peak: ", missing_peak, missing_peak.shape)
+                    local_maxima = np.append(local_maxima, missing_local_maxima, axis=0)
+
+        # Local Maximum Uniqueness
+        # When a new local maxima appears in a region that was
+        # previously occupied, two local maxima receive the same
+        # label. Keep label of local maximum closest to previous maximum
+        # and assign all local maxima which are further away with
+        # new label.
+        local_maxima_labels, local_maxima_counts = np.unique(local_maxima[:, 2], return_counts=True)
+        for label, count in zip(local_maxima_labels, local_maxima_counts):
+
+            if count > 1:
+
+                # find duplicated local maxima
+                duplicate_local_maxima_indices = np.where(local_maxima[:, 2] == label)[0]
+                duplicate_local_maxima = local_maxima[local_maxima[:, 2] == label]  # TODO use index instead
+
+                # get reference local maximum
+                prev_local_max = local_max_container[-1]
+                ref_local_max = prev_local_max[prev_local_max[:, 2] == label]
+
+                # euclidean distance
+                distance_to_ref = [np.linalg.norm(local_max_xy - ref_local_max[0, :2]) for local_max_xy in
+                                   duplicate_local_maxima[:, :2]]
+                min_dist = np.argmin(distance_to_ref)
+
+                # relabel all local maxima that are further away
+                to_relabel = list(range(len(distance_to_ref)))
+                del to_relabel[min_dist]
+                for to_rel in to_relabel:
+                    dup_index = duplicate_local_maxima_indices[to_rel]
+                    local_maxima[dup_index, 2] = next_event_id
+                    next_event_id += 1
+
+        # save current detected peaks
+        local_max_container.append(local_maxima)
+
+        #############################
+        ## Separate overlaying events
+
+        if local_maxima.shape[0] == 1:
+
+            # Single Local Maximum (== global maximum)
+            last_mask_frame = np.zeros((X, Y), dtype="i2")
+            last_mask_frame[~frame_mask] = local_maxima[0, 2]
+
+        else:
+            # Multiple Local Maxima
+            # use watershed algorithm to separate multiple overlaying events
+            # with location of local maxima as seeds
+
+            # create seeds
+            seeds = np.zeros((X, Y))
+            for i in range(local_maxima.shape[0]):
+                lmx, lmy, lbl = local_maxima[i, :]
+                seeds[lmx, lmy] = lbl
+
+            # run watershed on inverse intensity image
+            basin = -1 * frame_raw
+            basin[frame_mask] = 0
+
+            last_mask_frame = watershed(basin, seeds).astype("i2")
+            last_mask_frame[frame_mask] = 0
+
+        # save results of current run
+        new_mask[cz, :, :] = last_mask_frame
+
+    return new_mask, local_max_container
+
+
+def create_segmentation_video(segmentation, out_path, intensity_image=None, local_maxima=None,
+                              cmap_norm=None, non_roi_as_black=True,
+                              figsize=(10, 5), dpi=(300), interval=300, repeat_delay=1000):
+    num_segments = int(np.max(segmentation))
+
+    if non_roi_as_black and (intensity_image is not None):
+        intensity_image[segmentation == 0] = 0
+
+    # create random color map
+    if cmap_norm is None:
+        r_cmap, r_norm = rand_cmap(num_segments, last_color_black=False)
+    else:
+        r_cmap, r_norm = cmap_norm
+
+    # create figure
+    frames = []
+    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=figsize)
+    ax0.axis('off')
+    ax1.axis('off')
+
+    for cz in range(segmentation.shape[0]):
+
+        frame = []
+        frame.append(ax1.imshow(segmentation[cz, :, :], animated=True, cmap=r_cmap, norm=r_norm))
+
+        if local_maxima is not None:
+            lm = local_maxima[cz]
+
+            if len(lm) > 1:
+                frame.append(
+                    ax0.scatter(lm[:, 1], lm[:, 0], marker="x", color="red") if len(local_maxima) > 0 else ax0.scatter(
+                        0, 0))
+
+        if intensity_image is not None:
+            frame.append(ax0.imshow(intensity_image[cz, :, :], animated=True))
+
+        frames.append(frame)
+
+    ani = animation.ArtistAnimation(fig, frames, interval=interval, blit=True, repeat_delay=repeat_delay)
+    ani.save(out_path.as_posix(), dpi=dpi)
+
+
+def rand_cmap(nlabels, type='bright', first_color_black=True, last_color_black=False, verbose=True):
+    """
+    Creates a random colormap to be used together with matplotlib. Useful for segmentation tasks
+    :param nlabels: Number of labels (size of colormap)
+    :param type: 'bright' for strong colors, 'soft' for pastel colors
+    :param first_color_black: Option to use first color as black, True or False
+    :param last_color_black: Option to use last color as black, True or False
+    :param verbose: Prints the number of labels and shows the colormap. True or False
+    :return: colormap for matplotlib
+    """
+    from matplotlib.colors import LinearSegmentedColormap
+    import colorsys
+    import numpy as np
+
+    if type not in ('bright', 'soft'):
+        print('Please choose "bright" or "soft" for type')
+        return
+
+    if verbose:
+        print('Number of labels: ' + str(nlabels))
+
+    # Generate color map for bright colors, based on hsv
+    if type == 'bright':
+        randHSVcolors = [(np.random.uniform(low=0.0, high=1),
+                          np.random.uniform(low=0.2, high=1),
+                          np.random.uniform(low=0.9, high=1)) for i in range(nlabels)]
+
+        # Convert HSV list to RGB
+        randRGBcolors = []
+        for HSVcolor in randHSVcolors:
+            randRGBcolors.append(colorsys.hsv_to_rgb(HSVcolor[0], HSVcolor[1], HSVcolor[2]))
+
+        if first_color_black:
+            randRGBcolors[0] = [0, 0, 0]
+
+        if last_color_black:
+            randRGBcolors[-1] = [0, 0, 0]
+
+        random_colormap = LinearSegmentedColormap.from_list('new_map', randRGBcolors, N=nlabels)
+
+    # Generate soft pastel colors, by limiting the RGB spectrum
+    if type == 'soft':
+        low = 0.6
+        high = 0.95
+        randRGBcolors = [(np.random.uniform(low=low, high=high),
+                          np.random.uniform(low=low, high=high),
+                          np.random.uniform(low=low, high=high)) for i in range(nlabels)]
+
+        if first_color_black:
+            randRGBcolors[0] = [0, 0, 0]
+
+        if last_color_black:
+            randRGBcolors[-1] = [0, 0, 0]
+        random_colormap = LinearSegmentedColormap.from_list('new_map', randRGBcolors, N=nlabels)
+
+    # Display colorbar
+    if verbose:
+        from matplotlib import colors, colorbar
+        from matplotlib import pyplot as plt
+        fig, ax = plt.subplots(1, 1, figsize=(15, 0.5))
+
+        bounds = np.linspace(0, nlabels, nlabels + 1)
+        norm = colors.BoundaryNorm(bounds, nlabels)
+
+        cb = colorbar.ColorbarBase(ax, cmap=random_colormap, norm=norm, spacing='proportional', ticks=None,
+                                   boundaries=bounds, format='%1i', orientation=u'horizontal')
+
+    return random_colormap, colors.BoundaryNorm(bounds, nlabels)
+
 
 if __name__ == "__main__":
 
@@ -2047,7 +2334,6 @@ if __name__ == "__main__":
 
     print("Keys found: {}".format(keys))
     for key in keys:
-
         print("Starting with : ", key)
         t0 = time.time()
 
