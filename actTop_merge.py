@@ -1888,13 +1888,12 @@ def characterize_event(event_id, t0, t1, data_info, event_info, out_path, split_
 
     if split_subevents:
         z, x, y = np.where(event_map == event_id)
-        z0, z1 = np.min(z), np.max(z)
-        x0, x1 = np.min(x), np.max(x)
-        y0, y1 = np.min(y), np.max(y)
+        x0_, x1_ = np.min(x), np.max(x)
+        y0_, y1_ = np.min(y), np.max(y)
 
-        mask = event_map[z0:z1, x0:x1, y0:y1]
+        mask = event_map[:, x0_:x1_, y0_:y1_]
         mask = mask == event_id
-        raw = data[z0:z1, x0:x1, y0:y1]
+        raw = data[:, x0_:x1_, y0_:y1_]
 
         event_map, _ = detect_subevents(raw, mask)
 
@@ -1914,7 +1913,7 @@ def characterize_event(event_id, t0, t1, data_info, event_info, out_path, split_
             y0, y1 = np.min(y), np.max(y)
 
             res[event_id_key]["area"] = len(z)
-            res[event_id_key]["bbox"] = ((t0 + z0, t0 + z1), (x0, x1), (y0, y1))
+            res[event_id_key]["bbox"] = ((t0 + z0, t0 + z1), (x0, x1), (y0, y1)) if not split_subevents else ((t0 + z0, t0 + z1), (x0_+x0, x0_+x1), (y0_+y0, y0_+y1))
 
             dz, dx, dy = z1 - z0, x1 - x0, y1 - y0
             z, x, y = z - z0, x - x0, y - y0
@@ -1926,7 +1925,8 @@ def characterize_event(event_id, t0, t1, data_info, event_info, out_path, split_
             res[event_id_key]["mask"] = mask.flatten()
             res[event_id_key]["footprint"] = np.invert(np.min(mask, axis=0)).flatten()
 
-            signal = data[z0:z1 + 1, x0:x1 + 1, y0:y1 + 1]  # TODO weird that i need +1 here
+            # TODO weird that i need +1 here
+            signal = data[z0:z1+1, x0:x1 + 1, y0:y1 + 1] if not split_subevents else data[z0:z1+1, x0_+x0:x0_+x1 + 1, y0_+y0:y0_+y1 + 1]
             msignal = np.ma.masked_array(signal, mask)
             res[event_id_key]["trace"] = np.ma.filled(np.nanmean(msignal, axis=(1, 2)))
 
