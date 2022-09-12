@@ -1895,7 +1895,9 @@ def characterize_event(event_id, t0, t1, data_info, event_info, out_path, split_
         mask = mask == event_id
         raw = data[:, x0_:x1_, y0_:y1_]
 
-        event_map, _ = detect_subevents(raw, mask)
+        event_map_sub, _ = detect_subevents(raw, mask)
+        event_map = np.zeros(event_map.shape)
+        event_map[z0:z1, x0:x1, y0:y1] = event_map_sub
 
     res = {}
     for em_id in np.unique(event_map):
