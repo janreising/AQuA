@@ -1898,9 +1898,6 @@ def characterize_event(event_id, t0, t1, data_info, event_info, out_path, split_
     data = np.ndarray(d_shape, d_dtype, buffer=data_buffer.buf)
     data = data[t0:t1, gx0:gx1, gy0:gy1]
 
-    print("event_map: ", event_map.shape)
-    print("data: ", data.shape)
-
     if split_subevents:
         event_map, _ = detect_subevents(data, event_map == event_id)  # TODO inverse map?
 
