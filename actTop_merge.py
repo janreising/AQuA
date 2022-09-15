@@ -21,6 +21,7 @@ from skimage import measure, morphology  # , segmentation
 from skimage.filters import threshold_triangle, gaussian
 from skimage.feature import peak_local_max
 from skimage.segmentation import watershed
+from skimage.measure import regionprops_table
 
 import dask.array as da
 from dask.diagnostics import ProgressBar, Profiler, ResourceProfiler
@@ -763,6 +764,7 @@ class EventDetector:
         event_ = np.ndarray(event.shape, event.dtype, buffer=event_sh.buf)  # convert buffer to array
         event_[:] = event[:]  # load data
         event_info = (event.shape, event.dtype, event_sh.name)
+        del event
 
         # collecting tasks
         self.vprint("collecting tasks ...", 3)
@@ -1869,69 +1871,120 @@ class Legacy:
 
 
 def characterize_event(event_id, t0, t1, data_info, event_info, out_path, split_subevents=True):
+
+    # check if result already exists
     res_path = out_path.joinpath(f"events{event_id}.npy")
     if os.path.isfile(res_path):
         return 2
 
-    # data = tiledb.open(data_path.as_posix())[t0:t1, :, :]
-    # event_map = tiledb.open(event_map_path.as_posix())[t0:t1, :, :]
+    # buffer
+    t1 = t1+1
 
-    d_shape, d_dtype, d_name = data_info
-    data_buffer = shared_memory.SharedMemory(name=d_name)
-    data = np.ndarray(d_shape, d_dtype, buffer=data_buffer.buf)
-    data = data[t0:t1, :, :]
-
+    # get event map
     e_shape, e_dtype, e_name = event_info
     event_buffer = shared_memory.SharedMemory(name=e_name)
     event_map = np.ndarray(e_shape, e_dtype, buffer=event_buffer.buf)
     event_map = event_map[t0:t1, :, :]
 
+    # select volume with data
+    z, x, y = np.where(event_map == event_id)
+    gx0, gx1 = np.min(x), np.max(x) + 1
+    gy0, gy1 = np.min(y), np.max(y) + 1
+    event_map = event_map[:, gx0:gx1, gy0:gy1]
+
+    # index data volume
+    d_shape, d_dtype, d_name = data_info
+    data_buffer = shared_memory.SharedMemory(name=d_name)
+    data = np.ndarray(d_shape, d_dtype, buffer=data_buffer.buf)
+    data = data[t0:t1, gx0:gx1, gy0:gy1]
+
+    print("event_map: ", event_map.shape)
+    print("data: ", data.shape)
+
     if split_subevents:
-        z, x, y = np.where(event_map == event_id)
-        x0_, x1_ = np.min(x), np.max(x)
-        y0_, y1_ = np.min(y), np.max(y)
-
-        mask = event_map[:, x0_:x1_, y0_:y1_]
-        mask = mask == event_id
-        raw = data[:, x0_:x1_, y0_:y1_]
-
-        event_map_sub, _ = detect_subevents(raw, mask)
-        event_map = np.zeros(event_map.shape)
-        event_map[z0:z1, x0:x1, y0:y1] = event_map_sub
+        event_map, _ = detect_subevents(data, event_map == event_id)  # TODO inverse map?
 
     res = {}
     for em_id in np.unique(event_map):
 
-        if event_id == 0:
+        if em_id < 1:
             continue
 
+        em_id = int(em_id)
+        print("em_id: ", em_id)
         try:
             event_id_key = f"{event_id}_{em_id}" if split_subevents else event_id
             res[event_id_key] = {}
 
             z, x, y = np.where(event_map == em_id)
-            z0, z1 = np.min(z), np.max(z)
-            x0, x1 = np.min(x), np.max(x)
-            y0, y1 = np.min(y), np.max(y)
+            z0, z1 = np.min(z), np.max(z) + 1
+            x0, x1 = np.min(x), np.max(x) + 1
+            y0, y1 = np.min(y), np.max(y) + 1
 
-            res[event_id_key]["area"] = len(z)
-            res[event_id_key]["bbox"] = ((t0 + z0, t0 + z1), (x0, x1), (y0, y1)) if not split_subevents else ((t0 + z0, t0 + z1), (x0_+x0, x0_+x1), (y0_+y0, y0_+y1))
+            # local bounding box + global bounding box
+            res[event_id_key]["z0"] = t0+z0
+            res[event_id_key]["z1"] = t0+z1
 
+            res[event_id_key]["x0"] = gx0+x0
+            res[event_id_key]["x1"] = gx0+x1
+
+            res[event_id_key]["y0"] = gy0+y0
+            res[event_id_key]["y1"] = gy0+y1
+
+            # bbox dimensions
             dz, dx, dy = z1 - z0, x1 - x0, y1 - y0
-            z, x, y = z - z0, x - x0, y - y0
-            res[event_id_key]["dim"] = (dz + 1, dx + 1, dy + 1)
-            res[event_id_key]["pix_num"] = int((dz + 1) * (dx + 1) * (dy + 1))
+            res[event_id_key]["dz"] = dz
+            res[event_id_key]["dx"] = dx
+            res[event_id_key]["dy"] = dy
 
-            mask = np.ones((dz + 1, dx + 1, dy + 1), dtype=np.bool8)
-            mask[(z, x, y)] = 0
-            res[event_id_key]["mask"] = mask.flatten()
-            res[event_id_key]["footprint"] = np.invert(np.min(mask, axis=0)).flatten()
+            # area
+            res[event_id_key]["area"] = len(z)
+            res[event_id_key]["bbox_pix_num"] = int(dz * dx * dy)
 
-            # TODO weird that i need +1 here
-            signal = data[z0:z1+1, x0:x1 + 1, y0:y1 + 1] if not split_subevents else data[z0:z1+1, x0_+x0:x0_+x1 + 1, y0_+y0:y0_+y1 + 1]
-            msignal = np.ma.masked_array(signal, mask)
-            res[event_id_key]["trace"] = np.ma.filled(np.nanmean(msignal, axis=(1, 2)))
+            # shape
+            mask = np.ones((dz, dx, dy), dtype=np.bool8)
+            mask[(z-z0, x-x0, y-y0)] = 0
+            res[event_id_key]["mask"] = np.invert(mask).flatten()
 
+            if dz > 1:
+
+                props = regionprops_table(np.invert(mask).astype(np.uint8), properties=
+                    ['centroid_local', 'axis_major_length', "axis_minor_length", 'extent', 'solidity',
+                     'area', 'area_convex', 'equivalent_diameter_area', 'feret_diameter_max']
+                                          )
+
+                props["centroid_local-0"] = props["centroid_local-0"] / dz
+                props["centroid_local-1"] = props["centroid_local-1"] / dx
+                props["centroid_local-2"] = props["centroid_local-2"] / dy
+
+                for k in props.keys():
+                    res[event_id_key][f"mask_{k}"] = props[k][0]
+
+            # calculate footprint features
+            fp = np.invert(np.min(mask, axis=0))
+            res[event_id_key]["footprint"] =fp.flatten()
+
+            props = regionprops_table(fp.astype(np.uint8), properties=
+                ['centroid_local','axis_major_length', "axis_minor_length",
+                'eccentricity', 'equivalent_diameter_area', 'extent', 'feret_diameter_max',
+                'orientation', 'perimeter', 'solidity', 'area', 'area_convex']
+                                      )
+
+            props["centroid_local-0"] = props["centroid_local-0"] / dx
+            props["centroid_local-1"] = props["centroid_local-1"] / dy
+
+            for k in props.keys():
+                res[event_id_key][f"fp_{k}"] = props[k][0]
+
+            #trace
+            signal = data[z0:z1, x0:x1, y0:y1]
+            print("mask: ", mask.shape)
+            print("signal: ", signal.shape)
+            masked_signal = np.ma.masked_array(signal, mask)
+            res[event_id_key]["trace"] = np.ma.filled(np.nanmean(masked_signal, axis=(1, 2)))
+
+
+            # error messages
             res[event_id_key]["error"] = 0
 
         except ValueError as err:
