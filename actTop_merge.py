@@ -284,7 +284,7 @@ class EventDetector:
 
             def dynamic_threshold(img):
 
-                smooth = gaussian(img, sigma=smoXY)
+                smooth = gaussian(img, sigma=smoXY, multichannel=False)
                 thr = 1 if np.sum(img) == 0 else threshold_triangle(smooth)
                 img_thr = smooth > thr
                 img_thr = img_thr.astype(np.bool_)
@@ -765,6 +765,8 @@ class EventDetector:
         event_[:] = event[:]  # load data
         event_info = (event.shape, event.dtype, event_sh.name)
         del event
+        self.vprint("data_.dtype: {}".format(data_.dtype), 5)
+        self.vprint("event_.dtype: {}".format(event_.dtype), 5)
 
         # collecting tasks
         self.vprint("collecting tasks ...", 3)
@@ -778,9 +780,10 @@ class EventDetector:
 
         # push tasks to client
         e_ids = list(range(1, len(e_start)))
+        self.vprint("#tasks: {}".format(len(e_ids)), 4)
         random.shuffle(e_ids)
         futures = []
-        with Client(memory_limit='40GB') as client:
+        with Client(memory_limit='auto', processes=False) as client:
 
             for e_id in e_ids:
                 futures.append(
@@ -1944,17 +1947,32 @@ def characterize_event(event_id, t0, t1, data_info, event_info, out_path, split_
 
             if dz > 1:
 
-                props = regionprops_table(np.invert(mask).astype(np.uint8), properties=
-                    ['centroid_local', 'axis_major_length', "axis_minor_length", 'extent', 'solidity',
-                     'area', 'area_convex', 'equivalent_diameter_area', 'feret_diameter_max']
-                                          )
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
 
-                props["centroid_local-0"] = props["centroid_local-0"] / dz
-                props["centroid_local-1"] = props["centroid_local-1"] / dx
-                props["centroid_local-2"] = props["centroid_local-2"] / dy
+                    try:
+                        props = regionprops_table(np.invert(mask).astype(np.uint8), properties=
+                            ['centroid_local',
+                             'axis_major_length',
+                             "axis_minor_length",
+                             'extent',
+                             'solidity',
+                             'area',
+                             # 'area_convex',  # too much memory
+                             'equivalent_diameter_area',
+                             # 'feret_diameter_max'  # too much memory
+                            ])
 
-                for k in props.keys():
-                    res[event_id_key][f"mask_{k}"] = props[k][0]
+                        props["centroid_local-0"] = props["centroid_local-0"] / dz
+                        props["centroid_local-1"] = props["centroid_local-1"] / dx
+                        props["centroid_local-2"] = props["centroid_local-2"] / dy
+
+                        for k in props.keys():
+                            res[event_id_key][f"mask_{k}"] = props[k][0]
+
+                    except ValueError as err:
+                        print("\t Error in ", event_id_key)
+                        print("\t", err)
 
             # calculate footprint features
             fp = np.invert(np.min(mask, axis=0))
@@ -1977,6 +1995,12 @@ def characterize_event(event_id, t0, t1, data_info, event_info, out_path, split_
             masked_signal = np.ma.masked_array(signal, mask)
             res[event_id_key]["trace"] = np.ma.filled(np.nanmean(masked_signal, axis=(1, 2)))
 
+            # clean up
+            del signal
+            del masked_signal
+            del fp
+            del mask
+
             # error messages
             res[event_id_key]["error"] = 0
 
@@ -1987,9 +2011,12 @@ def characterize_event(event_id, t0, t1, data_info, event_info, out_path, split_
 
     np.save(res_path.as_posix(), res)
 
-    data_buffer.close()
-    event_buffer.close()
+    try:
+        data_buffer.close()
+        event_buffer.close()
 
+    except FileNotFoundError as err:
+        print("An error occured during shared memory closing: {}".format(err))
 
 # DEPRECATED: uses up too much memory
 def func_multi(task, data_path, event_path, out_path):
@@ -2107,19 +2134,17 @@ def detect_subevents(img, mask, sigma=2,
                                                                                                      mask.shape)
 
     mask = ~mask
-    img = img if sigma is None else gaussian(img, sigma=sigma)  # TODO is this already smoothed?
-    masked_img = np.ma.masked_array(img, mask=mask)
-
     Z, X, Y = mask.shape
 
-    new_mask = np.zeros((Z, X, Y))
-    last_mask_frame = np.zeros((X, Y))
+    new_mask = np.zeros((Z, X, Y), dtype=mask.dtype)
+    last_mask_frame = np.zeros((X, Y), dtype=mask.dtype)
     next_event_id = 1
     local_max_container = []
     for cz in range(Z):
 
-        frame_raw = masked_img[cz, :, :]
         frame_mask = mask[cz, :, :]
+        frame_raw = img[cz, :, :] if sigma is None else gaussian(img[cz, :, :], sigma=sigma)
+        frame_raw = np.ma.masked_array(frame_raw, frame_mask)
 
         if verbosity > 3: print(f"\n----- {cz} -----")
 
