@@ -1911,7 +1911,6 @@ def characterize_event(event_id, t0, t1, data_info, event_info, out_path, split_
             continue
 
         em_id = int(em_id)
-        print("em_id: ", em_id)
         try:
             event_id_key = f"{event_id}_{em_id}" if split_subevents else event_id
             res[event_id_key] = {}
@@ -1978,11 +1977,8 @@ def characterize_event(event_id, t0, t1, data_info, event_info, out_path, split_
 
             #trace
             signal = data[z0:z1, x0:x1, y0:y1]
-            print("mask: ", mask.shape)
-            print("signal: ", signal.shape)
             masked_signal = np.ma.masked_array(signal, mask)
             res[event_id_key]["trace"] = np.ma.filled(np.nanmean(masked_signal, axis=(1, 2)))
-
 
             # error messages
             res[event_id_key]["error"] = 0
