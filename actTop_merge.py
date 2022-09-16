@@ -1993,7 +1993,7 @@ def characterize_event(event_id, t0, t1, data_info, event_info, out_path, split_
             #trace
             signal = data[z0:z1, x0:x1, y0:y1]
             masked_signal = np.ma.masked_array(signal, mask)
-            res[event_id_key]["trace"] = np.ma.filled(np.nanmean(masked_signal, axis=(1, 2)))
+            res[event_id_key]["trace"] = np.ma.filled(np.nanmean(masked_signal, axis=(1, 2)), fill_value=0)
 
             # clean up
             del signal
@@ -2129,15 +2129,15 @@ def func(event_id, shape, sh_event_name, file_path):
 
 def detect_subevents(img, mask, sigma=2,
                      min_local_max_distance=5, local_max_threshold=0.5, min_roi_frame_area=5,
-                     verbosity=0):
+                     reject_if_original=True, verbosity=0):
     assert img.shape == mask.shape, "image ({}) and mask ({}) don't have the same dimension!".format(img.shape,
                                                                                                      mask.shape)
 
     mask = ~mask
     Z, X, Y = mask.shape
 
-    new_mask = np.zeros((Z, X, Y), dtype=mask.dtype)
-    last_mask_frame = np.zeros((X, Y), dtype=mask.dtype)
+    new_mask = np.zeros((Z, X, Y), dtype="i2")
+    last_mask_frame = np.zeros((X, Y), dtype="i2")
     next_event_id = 1
     local_max_container = []
     for cz in range(Z):
@@ -2270,7 +2270,12 @@ def detect_subevents(img, mask, sigma=2,
         # save results of current run
         new_mask[cz, :, :] = last_mask_frame
 
-    return new_mask, local_max_container
+    unique_elements = np.unique(new_mask)
+    if reject_if_original & (np.array_equal(unique_elements, [0, 1]) | np.array_equal(unique_elements,[0])):
+        # did not split original event
+        return ~mask, None
+    else:
+        return new_mask, local_max_container
 
 
 def create_segmentation_video(segmentation, out_path, intensity_image=None, local_maxima=None,
