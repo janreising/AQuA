@@ -99,7 +99,7 @@ class EventDetector:
 
     def run(self, dataset=None,
             threshold=None, min_size=20, use_dask=False, adjust_for_noise=False,
-            subset=None, output_folder=None):
+            subset=None, split_events=True, output_folder=None):
 
         self.meta["subset"] = subset
         self.meta["threshold"] = threshold
@@ -172,7 +172,7 @@ class EventDetector:
 
         # calculate features
         self.vprint("Calculating features", 2)
-        self.custom_slim_features(time_map, self.input_path, event_map_path)
+        self.custom_slim_features(time_map, self.input_path, event_map_path, split_events=split_events)
 
         self.vprint("saving features", 2)
         with open(self.output_directory.joinpath("meta.json"), 'w') as outfile:
@@ -738,7 +738,7 @@ class EventDetector:
 
         return R
 
-    def custom_slim_features(self, time_map, data_path, event_path):
+    def custom_slim_features(self, time_map, data_path, event_path, split_events=True):
 
         # print(event_map)
         # sh_em = shared_memory.SharedMemory(create=True, size=event_map.nbytes)
@@ -789,7 +789,7 @@ class EventDetector:
                 futures.append(
                     client.submit(
                         characterize_event,
-                        e_id, e_start[e_id], e_stop[e_id], data_info, event_info, out_path
+                        e_id, e_start[e_id], e_stop[e_id], data_info, event_info, out_path, split_events
                     )
                 )
             progress(futures)
@@ -1873,7 +1873,7 @@ class Legacy:
         return np.power(dist_squared_median, 0.5)
 
 
-def characterize_event(event_id, t0, t1, data_info, event_info, out_path, split_subevents=True):
+def characterize_event(event_id, t0, t1, data_info, event_info, out_path, split_events=True):
 
     # check if result already exists
     res_path = out_path.joinpath(f"events{event_id}.npy")
@@ -1901,7 +1901,7 @@ def characterize_event(event_id, t0, t1, data_info, event_info, out_path, split_
     data = np.ndarray(d_shape, d_dtype, buffer=data_buffer.buf)
     data = data[t0:t1, gx0:gx1, gy0:gy1]
 
-    if split_subevents:
+    if split_events:
         event_map, _ = detect_subevents(data, event_map == event_id)  # TODO inverse map?
 
     res = {}
@@ -1912,7 +1912,7 @@ def characterize_event(event_id, t0, t1, data_info, event_info, out_path, split_
 
         em_id = int(em_id)
         try:
-            event_id_key = f"{event_id}_{em_id}" if split_subevents else event_id
+            event_id_key = f"{event_id}_{em_id}" if split_events else event_id
             res[event_id_key] = {}
 
             z, x, y = np.where(event_map == em_id)
@@ -2396,6 +2396,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input", type=str, default=None)
     parser.add_argument("-t", "--threshold", type=int, default=None)
+    parser.add_argument("-s", "--splitevents", type=bool, default=1)
 
     args = parser.parse_args()
     args.threshold = args.threshold if args.threshold != -1 else None
@@ -2417,7 +2418,7 @@ if __name__ == "__main__":
 
         # run code
         ed = EventDetector(args.input, verbosity=10)
-        ed.run(dataset=key, threshold=args.threshold, use_dask=use_dask, subset=subset)
+        ed.run(dataset=key, threshold=args.threshold, use_dask=use_dask, subset=subset, split_events=args.splitevents)
 
         dt = time.time() - t0
         print("{:.1f} min".format(dt / 60) if dt > 60 else "{:.1f} s".format(dt))
