@@ -1984,6 +1984,9 @@ def characterize_event(event_id, t0, t1, data_info, event_info, out_path, split_
                 'orientation', 'perimeter', 'solidity', 'area', 'area_convex']
                                       )
 
+            props["cx"] = gx0 + props["fp_centroid_local-0"]
+            props["cy"] = gy0 + props["fp_centroid_local-1"]
+
             props["centroid_local-0"] = props["centroid_local-0"] / dx
             props["centroid_local-1"] = props["centroid_local-1"] / dy
 
@@ -2389,6 +2392,15 @@ def rand_cmap(nlabels, type='bright', first_color_black=True, last_color_black=F
 
     return random_colormap, colors.BoundaryNorm(bounds, nlabels)
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
 
 if __name__ == "__main__":
 
@@ -2396,13 +2408,26 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input", type=str, default=None)
     parser.add_argument("-t", "--threshold", type=int, default=None)
-    parser.add_argument("-s", "--splitevents", type=bool, default=1)
+
+    parser.add_argument("--splitevents", type=str2bool, nargs='?',
+                        const=True, default=True,
+                        help="Activate nice mode.")
 
     args = parser.parse_args()
     args.threshold = args.threshold if args.threshold != -1 else None
 
     use_dask = True
     subset = None
+
+    ##
+
+    print("-"*5, "parameters: ", "-"*5)
+    print("--input: ", args.input)
+    print("--threshold: ", args.threshold)
+    print("--splitevents: ", args.splitevents)
+    print("-"*10, "\n")
+
+    ##
 
     if args.input.endswith(".h5"):
         with h5.File(args.input, "r") as file:
