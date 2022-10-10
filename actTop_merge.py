@@ -1984,8 +1984,8 @@ def characterize_event(event_id, t0, t1, data_info, event_info, out_path, split_
                 'orientation', 'perimeter', 'solidity', 'area', 'area_convex']
                                       )
 
-            props["cx"] = gx0 + props["fp_centroid_local-0"]
-            props["cy"] = gy0 + props["fp_centroid_local-1"]
+            props["cx"] = gx0 + props["centroid_local-0"]
+            props["cy"] = gy0 + props["centroid_local-1"]
 
             props["centroid_local-0"] = props["centroid_local-0"] / dx
             props["centroid_local-1"] = props["centroid_local-1"] / dy
