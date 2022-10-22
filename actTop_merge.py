@@ -750,6 +750,12 @@ class EventDetector:
         # create chunks
 
         # shared memory
+
+        combined_path = event_path.parent.joinpath("events.npy")
+        if combined_path.is_file():
+            print("combined event path already exists! moving on ...")
+            return True
+
         self.vprint("creating shared memory arrays ...", 3)
         data = self.data
         n_bytes = data.shape[0] * data.shape[1] * data.shape[2] * data.dtype.itemsize  # get array info
@@ -811,7 +817,7 @@ class EventDetector:
         events = {}
         for e in os.listdir(out_path):
             events.update(np.load(out_path.joinpath(e), allow_pickle=True)[()])
-        np.save(event_path.parent.joinpath("events.npy"), events)
+        np.save(combined_path, events)
         shutil.rmtree(out_path)
 
         # else:
