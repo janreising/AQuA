@@ -178,7 +178,7 @@ class EventDetector:
         with open(self.output_directory.joinpath("meta.json"), 'w') as outfile:
             json.dump(self.meta, outfile)
 
-        self.vprint("Run complete! [{}]".format(self.input_path, 1))
+        self.vprint("Run complete! [{}]".format(self.input_path, 1), 1)
 
         # TODO do we really not want to calculate this?
         # return event_map, raw_trace_store, mask_store, footprints, meta
