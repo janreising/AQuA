@@ -52,6 +52,7 @@ from pathlib import Path
 import tifffile as tf
 from dask.distributed import progress
 
+import logging
 
 # from pathos.multiprocessing import ProcessingPool as pPool
 
@@ -789,7 +790,7 @@ class EventDetector:
         self.vprint("#tasks: {}".format(len(e_ids)), 4)
         random.shuffle(e_ids)
         futures = []
-        with Client(memory_limit='auto', processes=False) as client:
+        with Client(memory_limit='auto', processes=False, silence_logs=logging.ERROR) as client:
 
             for e_id in e_ids:
                 futures.append(
