@@ -191,7 +191,7 @@ class EventDetector:
 
         """ Creates print function that takes global verbosity level into account """
 
-        def v_level_print(msg: str, urgency: int):
+        def v_level_print(msg: str, urgency: int = 0):
             """ print function that checks if urgency is higher than global verbosity setting
 
             :param msg: message of the printout
@@ -232,7 +232,7 @@ class EventDetector:
                 data = da.from_array(data, chunks='auto')
 
         else:
-            self.vprint(f"unknown file type: {self.input_path}")
+            self.vprint(f"unknown file type: {self.input_path}", 0)
 
         if subset is not None:
             assert len(subset) == 6, "please provide a subset for all dimensions"
