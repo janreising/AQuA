@@ -314,6 +314,8 @@ class EventDetector:
 
             # label connected pixels
             # event_map, num_events = measure.label(active_pixels, return_num=True)
+
+            # TODO this fails for very large images
             event_map = np.zeros(data.shape, dtype=np.uintc)
             event_map[:], num_events = ndimage.label(active_pixels)
             self.vprint("labelled connected pixel. #events: {}".format(num_events), 3)
